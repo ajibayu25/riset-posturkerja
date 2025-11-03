@@ -4,26 +4,27 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 import cv2
 import numpy as np
 
-from config import DET_MODEL, DEVICE, EXPORT_CSV, EXPORT_JSONL, POSE_MODEL
+from config import DET_MODEL, EARPHONE_MODEL, DEVICE, EXPORT_CSV, EXPORT_JSONL, POSE_MODEL
 from constants.grids import MONITOR_PHONE_GRID, SECTION_B_MONITOR_AXIS, SECTION_B_PHONE_AXIS
-from constants.thresholds import SECTION_B_ADJUSTMENTS, SECTION_B_THRESHOLDS
-from core.geometry import Skeleton2D, clamp, distance
+from core.geometry import Skeleton2D, clamp
 from core.smoothing import EMA
 from core.timers import duration_adjust
 from rosa_io.exporters import export_csv, export_json
 from models.detect import ObjectDetector
 from models.pose import PoseEstimator
+from sensory.front import monitor_components, phone_components
 
 BBox = Tuple[int, int, int, int]
 
 
 @dataclass
 class AxisScore:
+    """Score details for a single axis (monitor or phone) including adjustments."""
     name: str
     base: int
     min_value: int
@@ -47,6 +48,7 @@ class AxisScore:
 
 @dataclass
 class SectionBResult:
+    """Structured result for Section B evaluation."""
     timestamp: float
     monitor: AxisScore
     phone: AxisScore
@@ -54,6 +56,7 @@ class SectionBResult:
     vertical_axis: int
     duration_adjustment: int
     section_score: int
+    query_breakdown: Dict[str, int]
 
     def to_row(self) -> Dict[str, float]:
         row = {
@@ -70,6 +73,7 @@ class SectionBResult:
 
 
 class SectionBScorer:
+    """Combine pose and detection measurements into ROSA Section B scores."""
     def __init__(self) -> None:
         self.monitor_axis_min = SECTION_B_MONITOR_AXIS[0]
         self.monitor_axis_max = SECTION_B_MONITOR_AXIS[-1]
@@ -81,12 +85,34 @@ class SectionBScorer:
         skeleton: Skeleton2D,
         monitor_bbox: Optional[BBox],
         phone_bbox: Optional[BBox],
+        audio_devices: Iterable[Tuple[str, float, BBox]],
         frame_shape: Tuple[int, int, int],
         total_seconds: float,
         continuous_seconds: float,
     ) -> SectionBResult:
-        monitor_score = self._score_monitor(skeleton, monitor_bbox)
-        phone_score = self._score_phone(skeleton, phone_bbox, frame_shape)
+        """Main entry: compute axes, grid lookup, and duration adjustments."""
+        monitor_comp = monitor_components(skeleton, monitor_bbox)
+        phone_comp = phone_components(skeleton, phone_bbox, audio_devices, frame_shape)
+
+        monitor_score = AxisScore(
+            name="monitor",
+            base=int(monitor_comp.base),
+            min_value=self.monitor_axis_min,
+            max_value=self.monitor_axis_max,
+            adjustments=dict(monitor_comp.adjustments),
+            metrics=dict(monitor_comp.metrics),
+        )
+        phone_score = AxisScore(
+            name="phone",
+            base=int(phone_comp.base),
+            min_value=self.phone_axis_min,
+            max_value=self.phone_axis_max,
+            adjustments=dict(phone_comp.adjustments),
+            metrics=dict(phone_comp.metrics),
+        )
+        query_breakdown: Dict[str, int] = {}
+        query_breakdown.update(monitor_comp.queries)
+        query_breakdown.update(phone_comp.queries)
 
         duration_adj = duration_adjust(total_seconds, continuous_seconds)
 
@@ -113,102 +139,18 @@ class SectionBScorer:
             vertical_axis=int(vertical_axis),
             duration_adjustment=duration_adj,
             section_score=section_score,
-        )
-
-    def _score_monitor(self, skeleton: Skeleton2D, monitor_bbox: Optional[BBox]) -> AxisScore:
-        cfg = SECTION_B_THRESHOLDS["monitor"]
-        adjustments = {}
-        metrics: Dict[str, float] = {}
-        base = 0
-
-        neck_vec = None
-        shoulder_mid = skeleton.shoulder_mid()
-        nose = skeleton.point("nose")
-        if shoulder_mid is not None and nose is not None:
-            neck_vec = nose - shoulder_mid
-            metrics["neck_vertical"] = float(neck_vec[1])
-            metrics["neck_horizontal"] = float(neck_vec[0])
-            if neck_vec[1] > cfg["vertical_angle_deg"]["too_low_max"]:
-                base = max(base, 1)  # looking down
-                adjustments.setdefault("too_low", SECTION_B_ADJUSTMENTS["monitor"].get("too_low", 1))
-            if neck_vec[1] < -cfg["vertical_angle_deg"]["too_high_min"]:
-                base = max(base, 2)
-                adjustments.setdefault("too_high", SECTION_B_ADJUSTMENTS["monitor"].get("too_high", 1))
-
-        if monitor_bbox is not None and shoulder_mid is not None:
-            x1, y1, x2, y2 = monitor_bbox
-            width = max(1.0, float(x2 - x1))
-            height = max(1.0, float(y2 - y1))
-            center_y = (y1 + y2) / 2.0
-            metrics["monitor_width"] = width
-            metrics["monitor_height"] = height
-            metrics["monitor_center_y"] = center_y
-            metrics["monitor_offset_y"] = center_y - shoulder_mid[1]
-            shoulder_width = skeleton.shoulder_width()
-            if not np.isnan(shoulder_width):
-                ratio = shoulder_width / width
-                metrics["distance_ratio"] = ratio
-                if ratio > cfg["distance_cm"]["too_far_min"] / 10.0:  # rough pixel heuristic
-                    adjustments.setdefault("too_far", SECTION_B_ADJUSTMENTS["monitor"].get("too_far", 1))
-
-        return AxisScore(
-            name="monitor",
-            base=int(base),
-            min_value=self.monitor_axis_min,
-            max_value=self.monitor_axis_max,
-            adjustments=adjustments,
-            metrics=metrics,
-        )
-
-    def _score_phone(
-        self,
-        skeleton: Skeleton2D,
-        phone_bbox: Optional[BBox],
-        frame_shape: Tuple[int, int, int],
-    ) -> AxisScore:
-        cfg = SECTION_B_THRESHOLDS["telephone"]
-        adjustments = {}
-        metrics: Dict[str, float] = {}
-        base = 0
-
-        sidebend = skeleton.neck_sidebend()
-        metrics["neck_sidebend"] = sidebend
-        if not np.isnan(sidebend) and abs(sidebend) > cfg["neck_sidebend_deg"]:
-            adjustments.setdefault("neck_shoulder_hold", SECTION_B_ADJUSTMENTS["telephone"].get("neck_shoulder_hold", 2))
-
-        if phone_bbox is not None:
-            x1, y1, x2, y2 = phone_bbox
-            phone_center = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=float)
-            metrics["phone_center_x"] = phone_center[0]
-            metrics["phone_center_y"] = phone_center[1]
-            ref_point = skeleton.point("right_shoulder") or skeleton.point("nose")
-            if ref_point is not None:
-                reach = distance(phone_center, ref_point)
-                metrics["reach_pixels"] = reach
-                height, width = frame_shape[0], frame_shape[1]
-                diag = (width**2 + height**2) ** 0.5
-                if reach > 0.3 * diag:
-                    base = max(base, 2)
-                    adjustments.setdefault("outside_reach", SECTION_B_ADJUSTMENTS["telephone"].get("outside_reach", 2))
-        else:
-            metrics["phone_detected"] = 0.0
-
-        return AxisScore(
-            name="phone",
-            base=int(base),
-            min_value=self.phone_axis_min,
-            max_value=self.phone_axis_max,
-            adjustments=adjustments,
-            metrics=metrics,
+            query_breakdown=query_breakdown,
         )
 
 
 class LiveSectionBApp:
+    """Legacy OpenCV loop to visualise Section B scoring without the Tk GUI."""
     def __init__(
         self,
         cam_index: int = 0,
         pose_model: Optional[str] = None,
         det_model: Optional[str] = None,
+        ear_model: Optional[str] = None,
         device: Optional[str] = None,
         export_mode: str = "csv",
         smoothing_alpha: float = 0.3,
@@ -218,6 +160,7 @@ class LiveSectionBApp:
         self.export_mode = export_mode
         self.pose = PoseEstimator(model_path=pose_model or POSE_MODEL, device=device or DEVICE)
         self.detector = ObjectDetector(model_path=det_model or DET_MODEL, device=device or DEVICE)
+        self.audio_detector = ObjectDetector(model_path=ear_model or EARPHONE_MODEL, device=device or DEVICE)
         self.cap = cv2.VideoCapture(cam_index)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -232,8 +175,10 @@ class LiveSectionBApp:
         self.frame_count = 0
         self.last_monitor_bbox: Optional[BBox] = None
         self.last_phone_bbox: Optional[BBox] = None
+        self.last_audio_devices = []
 
     def _apply_smoothing(self, keypoints: np.ndarray) -> np.ndarray:
+        """Apply exponential smoothing to raw pose keypoints."""
         if self.ema is None:
             return keypoints
         flat = keypoints.reshape(-1)
@@ -241,6 +186,7 @@ class LiveSectionBApp:
         return smoothed.reshape(keypoints.shape)
 
     def _export(self, result: SectionBResult) -> None:
+        """Write Section B row to persistent CSV/JSON logs."""
         if self.export_mode == "none":
             return
         row = result.to_row()
@@ -250,6 +196,7 @@ class LiveSectionBApp:
             export_json(EXPORT_JSONL, row)
 
     def _format_overlay(self, result: SectionBResult) -> List[str]:
+        """Render human-readable summary shown on video preview."""
         lines = [
             f"Section B score: {result.section_score} (dur {result.duration_adjustment:+d})",
             f"Monitor axis (H): {result.horizontal_axis} | Phone axis (V): {result.vertical_axis}",
@@ -261,13 +208,17 @@ class LiveSectionBApp:
         return lines
 
     def _maybe_run_detection(self, frame: np.ndarray) -> None:
+        """Throttle object detection to every n-th frame for speed."""
         if self.frame_count % self.detection_stride != 0:
             return
         detections = self.detector.predict(frame)
         self.last_monitor_bbox = ObjectDetector.pick_monitor_bbox(detections)
         self.last_phone_bbox = ObjectDetector.pick_phone_bbox(detections)
+        ear_pred = self.audio_detector.predict(frame)
+        self.last_audio_devices = ObjectDetector.pick_audio_devices(detections, [ear_pred])
 
     def run(self) -> None:
+        """Main loop capturing frames, scoring, and updating the preview window."""
         if not self.cap.isOpened():
             raise RuntimeError(f"Camera {self.cam_index} cannot be opened")
         window_name = "ROSA Section B"
@@ -293,6 +244,7 @@ class LiveSectionBApp:
                         skeleton,
                         self.last_monitor_bbox,
                         self.last_phone_bbox,
+                        self.last_audio_devices,
                         frame.shape,
                         total_seconds,
                         continuous_seconds,

@@ -16,10 +16,12 @@ __all__ = [
 
 
 def ensure_parent(path: Path) -> None:
+    """Create parent directories for the given file path if missing."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def export_csv(path: str, row: Mapping[str, object]) -> None:
+    """Append a row to CSV, writing header automatically on first call."""
     file_path = Path(path)
     ensure_parent(file_path)
     row_dict = dict(row)
@@ -31,6 +33,7 @@ def export_csv(path: str, row: Mapping[str, object]) -> None:
 
 
 def export_json(path: str, row: Mapping[str, object]) -> None:
+    """Append a JSONL row with timestamp metadata."""
     file_path = Path(path)
     ensure_parent(file_path)
     payload = {"ts": datetime.now().isoformat(), **dict(row)}

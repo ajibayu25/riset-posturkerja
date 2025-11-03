@@ -42,6 +42,7 @@ PointArray = np.ndarray
 # --- Basic utilities -------------------------------------------------------
 
 def _ensure_array(point: PointLike) -> Optional[np.ndarray]:
+    """Convert a point-like input into a 2-element float array or None if invalid."""
     if point is None:
         return None
     arr = np.asarray(point, dtype=float)
@@ -53,6 +54,7 @@ def _ensure_array(point: PointLike) -> Optional[np.ndarray]:
 
 
 def distance(p1: PointLike, p2: PointLike) -> float:
+    """Euclidean distance between two points; returns NaN if either is missing."""
     a, b = _ensure_array(p1), _ensure_array(p2)
     if a is None or b is None:
         return float("nan")
@@ -60,6 +62,7 @@ def distance(p1: PointLike, p2: PointLike) -> float:
 
 
 def midpoint(*points: PointLike) -> Optional[np.ndarray]:
+    """Average the supplied points and return their centroid."""
     valid = [_ensure_array(p) for p in points if _ensure_array(p) is not None]
     if not valid:
         return None
@@ -67,6 +70,7 @@ def midpoint(*points: PointLike) -> Optional[np.ndarray]:
 
 
 def centroid(points: Iterable[PointLike]) -> Optional[np.ndarray]:
+    """Centroid of an iterable of points; ignores missing inputs."""
     pts = [_ensure_array(p) for p in points if _ensure_array(p) is not None]
     if not pts:
         return None
@@ -74,6 +78,7 @@ def centroid(points: Iterable[PointLike]) -> Optional[np.ndarray]:
 
 
 def vector(p1: PointLike, p2: PointLike) -> Optional[np.ndarray]:
+    """Return vector from p1 to p2 or None if either endpoint is invalid."""
     a, b = _ensure_array(p1), _ensure_array(p2)
     if a is None or b is None:
         return None
@@ -81,6 +86,7 @@ def vector(p1: PointLike, p2: PointLike) -> Optional[np.ndarray]:
 
 
 def normalize(v: PointLike) -> Optional[np.ndarray]:
+    """Return unit vector in the direction of v, handling degenerate inputs."""
     arr = _ensure_array(v)
     if arr is None:
         return None
@@ -91,6 +97,7 @@ def normalize(v: PointLike) -> Optional[np.ndarray]:
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
+    """Clamp value into the closed interval [lo, hi]."""
     return max(lo, min(hi, value))
 
 
@@ -141,6 +148,7 @@ def angle_to_vertical(p1: PointLike, p2: PointLike) -> float:
 
 
 def vertical_displacement(p1: PointLike, p2: PointLike) -> float:
+    """Signed vertical distance from p1 to p2; positive when p2 is lower."""
     a, b = _ensure_array(p1), _ensure_array(p2)
     if a is None or b is None:
         return float("nan")
@@ -148,6 +156,7 @@ def vertical_displacement(p1: PointLike, p2: PointLike) -> float:
 
 
 def horizontal_displacement(p1: PointLike, p2: PointLike) -> float:
+    """Signed horizontal distance from p1 to p2; positive when p2 is to the right."""
     a, b = _ensure_array(p1), _ensure_array(p2)
     if a is None or b is None:
         return float("nan")
@@ -155,6 +164,7 @@ def horizontal_displacement(p1: PointLike, p2: PointLike) -> float:
 
 
 def bounding_box(points: Iterable[PointLike]) -> Optional[Tuple[float, float, float, float]]:
+    """Return (xmin, ymin, xmax, ymax) envelope for the supplied points."""
     pts = [_ensure_array(p) for p in points if _ensure_array(p) is not None]
     if not pts:
         return None
@@ -180,6 +190,7 @@ class Skeleton2D:
         names: Sequence[str] = COCO_KEYPOINT_NAMES,
         min_confidence: float = 0.0,
     ) -> "Skeleton2D":
+        """Construct a skeleton from raw model output, filtering by confidence."""
         arr = np.asarray(keypoints, dtype=float)
         if arr.ndim != 2:
             raise ValueError("keypoints must be shape (N, D)")
@@ -198,47 +209,58 @@ class Skeleton2D:
         return cls(points, conf)
 
     def has(self, name: str) -> bool:
+        """Whether a particular COCO landmark is present."""
         return name in self.keypoints
 
     def point(self, name: str) -> Optional[np.ndarray]:
+        """Return point for a named landmark or None if missing."""
         return self.keypoints.get(name)
 
     def confidence_of(self, name: str) -> float:
+        """Return confidence score (0-1) for a landmark."""
         return self.confidence.get(name, 0.0)
 
     # --- paired helpers -------------------------------------------------
     def pair_midpoint(self, left: str, right: str) -> Optional[np.ndarray]:
+        """Midpoint between two symmetric landmarks (e.g. left/right shoulder)."""
         return midpoint(self.point(left), self.point(right))
 
     def shoulder_mid(self) -> Optional[np.ndarray]:
+        """Midpoint of both shoulders (useful trunk reference)."""
         return self.pair_midpoint("left_shoulder", "right_shoulder")
 
     def hip_mid(self) -> Optional[np.ndarray]:
+        """Midpoint of both hips."""
         return self.pair_midpoint("left_hip", "right_hip")
 
     def knee_mid(self) -> Optional[np.ndarray]:
+        """Midpoint of both knees."""
         return self.pair_midpoint("left_knee", "right_knee")
 
     # --- joint angles ---------------------------------------------------
     def elbow_angle(self, side: str) -> float:
+        """Elbow flexion angle (deg) for left/right arm."""
         joint = f"{side}_elbow"
         shoulder = f"{side}_shoulder"
         wrist = f"{side}_wrist"
         return angle_deg(self.point(shoulder), self.point(joint), self.point(wrist))
 
     def knee_angle(self, side: str) -> float:
+        """Knee flexion angle (deg) for left/right leg."""
         joint = f"{side}_knee"
         hip = f"{side}_hip"
         ankle = f"{side}_ankle"
         return angle_deg(self.point(hip), self.point(joint), self.point(ankle))
 
     def hip_angle(self, side: str) -> float:
+        """Hip flexion angle (deg) for left/right leg."""
         hip = f"{side}_hip"
         knee = f"{side}_knee"
         shoulder = f"{side}_shoulder"
         return angle_deg(self.point(shoulder), self.point(hip), self.point(knee))
 
     def shoulder_abduction(self, side: str) -> float:
+        """Shoulder abduction angle (deg) for left/right arm."""
         shoulder = f"{side}_shoulder"
         hip = f"{side}_hip"
         elbow = f"{side}_elbow"
@@ -246,6 +268,7 @@ class Skeleton2D:
 
     # --- posture angles -------------------------------------------------
     def trunk_inclination(self) -> float:
+        """Forward/backward lean of the torso relative to vertical."""
         hip_mid = self.hip_mid()
         shoulder_mid = self.shoulder_mid()
         if hip_mid is None or shoulder_mid is None:
@@ -253,6 +276,7 @@ class Skeleton2D:
         return angle_to_vertical(hip_mid, shoulder_mid)
 
     def neck_flexion(self) -> float:
+        """Neck flexion/extension relative to vertical axis."""
         shoulder_mid = self.shoulder_mid()
         nose = self.point("nose")
         if shoulder_mid is None or nose is None:
@@ -262,6 +286,7 @@ class Skeleton2D:
         return angle_between(direction, vertical)
 
     def neck_sidebend(self) -> float:
+        """Lateral neck bending angle (positive to worker's right)."""
         shoulder_mid = self.shoulder_mid()
         nose = self.point("nose")
         if shoulder_mid is None or nose is None:
@@ -272,29 +297,34 @@ class Skeleton2D:
         return signed_angle_between(vertical, direction)
 
     def shoulder_height_diff(self) -> float:
+        """Vertical offset between left and right shoulder landmarks."""
         left, right = self.point("left_shoulder"), self.point("right_shoulder")
         if left is None or right is None:
             return float("nan")
         return float(left[1] - right[1])
 
     def shoulder_width(self) -> float:
+        """Distance between left/right shoulders."""
         left, right = self.point("left_shoulder"), self.point("right_shoulder")
         if left is None or right is None:
             return float("nan")
         return distance(left, right)
 
     def hip_width(self) -> float:
+        """Distance between left/right hips."""
         left, right = self.point("left_hip"), self.point("right_hip")
         if left is None or right is None:
             return float("nan")
         return distance(left, right)
 
     def limb_length(self, side: str, proximal: str, distal: str) -> float:
+        """Generic helper to measure limb segment length."""
         a = f"{side}_{proximal}"
         b = f"{side}_{distal}"
         return distance(self.point(a), self.point(b))
 
     def ankle_height(self, side: str) -> float:
+        """Return vertical coordinate of an ankle (used for foot contact checks)."""
         ankle = self.point(f"{side}_ankle")
         if ankle is None:
             return float("nan")

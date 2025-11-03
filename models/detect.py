@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import torch
 from ultralytics import YOLO
@@ -61,3 +61,24 @@ class ObjectDetector:
             return None
         x1, y1, x2, y2 = map(int, best_coords)
         return x1, y1, x2, y2
+
+    @staticmethod
+    def pick_audio_devices(prediction, extra_predictions: Optional[Iterable] = None, labels: Tuple[str, ...] = ("cell phone", "earbud", "earphone", "headset")) -> List[Tuple[str, float, BBox]]:
+        devices: List[Tuple[str, float, BBox]] = []
+        predictions = [prediction]
+        if extra_predictions:
+            predictions.extend(extra_predictions)
+        for pred in predictions:
+            if pred is None or pred.boxes is None or len(pred.boxes) == 0:
+                continue
+            names = pred.names
+            boxes = pred.boxes
+            for idx in range(len(boxes)):
+                label = names.get(int(boxes.cls[idx]), "")
+                if label not in labels:
+                    continue
+                coords = boxes.xyxy[idx].tolist()
+                conf = float(boxes.conf[idx].item())
+                bbox = tuple(map(int, coords))
+                devices.append((label, conf, bbox))  # type: ignore[arg-type]
+        return devices

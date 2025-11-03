@@ -11,16 +11,17 @@ import numpy as np
 
 from config import DEVICE, EXPORT_CSV, EXPORT_JSONL, POSE_MODEL
 from constants.grids import SECTIONC_MOUSE_KEYBOARD_GRID, SECTION_C_KEYBOARD_AXIS, SECTION_C_MOUSE_AXIS
-from constants.thresholds import SECTION_C_ADJUSTMENTS, SECTION_C_THRESHOLDS
 from core.geometry import Skeleton2D, clamp, distance
 from core.smoothing import EMA
 from core.timers import duration_adjust
 from rosa_io.exporters import export_csv, export_json
 from models.pose import PoseEstimator
+from sensory.overhead import keyboard_components, mouse_components
 
 
 @dataclass
 class AxisScore:
+    """Capture base score plus adjustments for mouse/keyboard axes."""
     name: str
     base: int
     min_value: int
@@ -44,6 +45,7 @@ class AxisScore:
 
 @dataclass
 class SectionCResult:
+    """Point-in-time ROSA Section C result."""
     timestamp: float
     mouse: AxisScore
     keyboard: AxisScore
@@ -51,6 +53,7 @@ class SectionCResult:
     horizontal_axis: int
     duration_adjustment: int
     section_score: int
+    query_breakdown: Dict[str, int]
 
     def to_row(self) -> Dict[str, float]:
         row = {
@@ -67,6 +70,7 @@ class SectionCResult:
 
 
 class SectionCScorer:
+    """Compute Section C scores from a pose skeleton."""
     def __init__(self) -> None:
         self.mouse_axis_min = SECTION_C_MOUSE_AXIS[0]
         self.mouse_axis_max = SECTION_C_MOUSE_AXIS[-1]
@@ -80,8 +84,29 @@ class SectionCScorer:
         total_seconds: float,
         continuous_seconds: float,
     ) -> SectionCResult:
-        mouse_score = self._score_mouse(skeleton, hand_preference)
-        keyboard_score = self._score_keyboard(skeleton)
+        """Main entry to produce Section C score and breakdown."""
+        mouse_comp = mouse_components(skeleton)
+        keyboard_comp = keyboard_components(skeleton)
+
+        mouse_score = AxisScore(
+            name="mouse",
+            base=int(mouse_comp.base),
+            min_value=self.mouse_axis_min,
+            max_value=self.mouse_axis_max,
+            adjustments=dict(mouse_comp.adjustments),
+            metrics=dict(mouse_comp.metrics),
+        )
+        keyboard_score = AxisScore(
+            name="keyboard",
+            base=int(keyboard_comp.base),
+            min_value=self.keyboard_axis_min,
+            max_value=self.keyboard_axis_max,
+            adjustments=dict(keyboard_comp.adjustments),
+            metrics=dict(keyboard_comp.metrics),
+        )
+        query_breakdown: Dict[str, int] = {}
+        query_breakdown.update(mouse_comp.queries)
+        query_breakdown.update(keyboard_comp.queries)
 
         duration_adj = duration_adjust(total_seconds, continuous_seconds)
         vertical_axis = clamp(
@@ -107,80 +132,11 @@ class SectionCScorer:
             horizontal_axis=int(horizontal_axis),
             duration_adjustment=duration_adj,
             section_score=section_score,
+            query_breakdown=query_breakdown,
         )
-
-    def _score_mouse(self, skeleton: Skeleton2D, hand_preference: str) -> AxisScore:
-        cfg = SECTION_C_THRESHOLDS["mouse"]
-        adjustments = {}
-        metrics: Dict[str, float] = {}
-        base = 0
-
-        side = hand_preference
-        shoulder = skeleton.point(f"{side}_shoulder")
-        wrist = skeleton.point(f"{side}_wrist")
-        if shoulder is not None and wrist is not None:
-            offset = abs(wrist[0] - shoulder[0])
-            metrics["lateral_offset_px"] = offset
-            shoulder_width = skeleton.shoulder_width()
-            if not np.isnan(shoulder_width) and shoulder_width > 1e-6:
-                ratio = offset / shoulder_width
-                metrics["lateral_ratio"] = ratio
-                if ratio > 0.35:
-                    base = max(base, 1)
-                    adjustments.setdefault("reach", SECTION_C_ADJUSTMENTS["mouse"].get("reach", 2))
-        shoulder_mid = skeleton.shoulder_mid()
-        hip_mid = skeleton.hip_mid()
-        if shoulder_mid is not None and hip_mid is not None:
-            vertical = shoulder_mid[1] - hip_mid[1]
-            metrics["shoulder_elevation"] = vertical
-            if vertical < -20:
-                adjustments.setdefault("shoulder_shrug", SECTION_C_ADJUSTMENTS["keyboard"].get("shoulder_shrug", 1))
-
-        return AxisScore(
-            name="mouse",
-            base=int(base),
-            min_value=self.mouse_axis_min,
-            max_value=self.mouse_axis_max,
-            adjustments=adjustments,
-            metrics=metrics,
-        )
-
-    def _score_keyboard(self, skeleton: Skeleton2D) -> AxisScore:
-        cfg = SECTION_C_THRESHOLDS["keyboard"]
-        adjustments = {}
-        metrics: Dict[str, float] = {}
-        base = 0
-
-        elbow_angles: List[float] = []
-        for side in ("left", "right"):
-            angle = skeleton.elbow_angle(side)
-            metrics[f"{side}_elbow_angle"] = angle
-            if np.isnan(angle):
-                continue
-            elbow_angles.append(angle)
-        if elbow_angles:
-            avg_angle = float(np.mean(elbow_angles))
-            metrics["avg_elbow_angle"] = avg_angle
-            if abs(avg_angle - 90.0) > 15.0:
-                base = max(base, 1)
-            if abs(avg_angle - 90.0) > 30.0:
-                base = max(base, 2)
-        shoulder_diff = skeleton.shoulder_height_diff()
-        metrics["shoulder_height_diff"] = shoulder_diff
-        if not np.isnan(shoulder_diff) and abs(shoulder_diff) > cfg["shoulder_shrug_deg"]:
-            adjustments.setdefault("shoulder_shrug", SECTION_C_ADJUSTMENTS["keyboard"].get("shoulder_shrug", 1))
-
-        return AxisScore(
-            name="keyboard",
-            base=int(base),
-            min_value=self.keyboard_axis_min,
-            max_value=self.keyboard_axis_max,
-            adjustments=adjustments,
-            metrics=metrics,
-        )
-
 
 class LiveSectionCApp:
+    """Minimal OpenCV UI to preview Section C scoring."""
     def __init__(
         self,
         cam_index: int = 0,
@@ -206,6 +162,7 @@ class LiveSectionCApp:
         self.last_result: Optional[SectionCResult] = None
 
     def _apply_smoothing(self, keypoints: np.ndarray) -> np.ndarray:
+        """Smooth raw pose keypoints to reduce jitter."""
         if self.ema is None:
             return keypoints
         flat = keypoints.reshape(-1)
@@ -213,6 +170,7 @@ class LiveSectionCApp:
         return smoothed.reshape(keypoints.shape)
 
     def _export(self, result: SectionCResult) -> None:
+        """Append the latest Section C row to CSV/JSON logs."""
         if self.export_mode == "none":
             return
         row = result.to_row()
@@ -222,6 +180,7 @@ class LiveSectionCApp:
             export_json(EXPORT_JSONL, row)
 
     def _format_overlay(self, result: SectionCResult) -> List[str]:
+        """Build textual overlay summarising risk posture."""
         lines = [
             f"Section C score: {result.section_score} (dur {result.duration_adjustment:+d})",
             f"Mouse axis (V): {result.vertical_axis} | Keyboard axis (H): {result.horizontal_axis}",
@@ -233,6 +192,7 @@ class LiveSectionCApp:
         return lines
 
     def run(self) -> None:
+        """Open capture loop, compute scores, and display overlays."""
         if not self.cap.isOpened():
             raise RuntimeError(f"Camera {self.cam_index} cannot be opened")
         window_name = "ROSA Section C"

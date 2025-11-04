@@ -44,16 +44,22 @@ SECTION_A_THRESHOLDS = {
         },
     },
     "armrest": {
-        # Elbow at ~90 deg with relaxed shoulders (CSA, 2000)
+        # Elbow flexion 90° ±10° keeps forearm neutral (CSA Z412 / ROSA Appendix A).
         "elbow_angle_deg": {
             "neutral_min": 85.0,
             "neutral_max": 100.0,
         },
-        # Shoulder elevation above neutral considered shrugging
+        # Shoulder elevation >~15° indicates shrugging (ISO 11226 / CSA Z412 guidance).
         "shoulder_shrug_deg": 15.0,
-        # Armrest width relative to biacromial breadth (shoulder width)
+        # Vertical shoulder–elbow gap derived from ROSA illustration & CSA design targets.
+        "shoulder_elbow_gap_cm": {
+            "too_high_max": -2.0,  # elbow ≥2 cm above shoulder = shoulders shrugged.
+            "too_low_min": 5.0,    # elbow ≥5 cm below shoulder = unsupported arm.
+        },
+        # Armrest width relative to biacromial breadth (shoulder width).  CSA Z412 suggests
+        # keeping shoulder abduction ≤20°, which equates to ~20% extra spacing.
         "max_abduction_ratio": 0.20,
-        # Pressure threshold (fraction of forearm area) for "hard surface" detection (heuristic)
+        # Pressure threshold (fraction of forearm area) for "hard surface" detection (heuristic).
         "surface_pressure_kpa": 5.0,
     },
     "back_support": {
@@ -78,7 +84,7 @@ SECTION_A_ADJUSTMENTS = {
     "seat_height": {
         "insufficient_legroom": 1,
         "non_adjustable": 1,
-        "no_foot_contact": 3,
+        "no_foot_contact_on_ground": 3,
     },
     "seat_depth": {
         "non_adjustable": 1,
@@ -86,8 +92,8 @@ SECTION_A_ADJUSTMENTS = {
     "armrest": {
         "too_high": 2,
         "too_low": 2,
-        "too_wide": 1,
-        "hard_surface": 1,
+        "too_wide_armrest_spacing": 1,
+        "hard_or_damaged_surface": 1,
         "non_adjustable": 1,
     },
     "back_support": {
@@ -102,6 +108,24 @@ SECTION_A_ADJUSTMENTS = {
 
 # --- Section B : Monitor & Telephone ---
 SECTION_B_THRESHOLDS = {
+    "front": {
+        # Telephone reach should stay within 30 cm from the neutral shoulder position.
+        "phone_reach_max_cm": 30.0,
+        # Surfaces above the elbow by more than ~2 cm cause shoulder shrugging (CSA Z412).
+        "surface_high_above_elbow_cm": 2.0,
+        # Wrist considered on the work surface when within 3 cm vertically.
+        "wrist_surface_proximity_cm": 3.0,
+        # Shoulder-elevation proxy (gap elbow vs shoulder) for detecting shrug posture.
+        "shoulder_elbow_shrug_gap_cm": 2.0,
+        # Neck sidebend for shoulder hold (phone wedged between head/shoulder).
+        "neck_sidebend_hold_deg": 25.0,  # ROSA telephone posture guidance (~20-30°).
+        # Shoulder elevation threshold when neck sidebend data unavailable.
+        "shoulder_hold_gap_cm": 2.5,
+        # Maximum handset distance from ear to count as clamped to shoulder.
+        "shoulder_hold_distance_cm": 6.0,
+        # Default biacromial breadth for px→cm scaling when only pose landmarks exist.
+        "shoulder_breadth_cm": 38.0,
+    },
     "monitor": {
         "distance_cm": {
             "ideal_min": 40.0,
@@ -141,8 +165,8 @@ SECTION_B_ADJUSTMENTS = {
     },
     "telephone": {
         "outside_reach": 2,
-        "neck_shoulder_hold": 2,
-        "no_hands_free": 1,
+        "neck_and_shoulder_hold": 2,
+        "no_hands_free_options": 1,
     },
 }
 

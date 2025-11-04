@@ -27,3 +27,4 @@ SECTIONC_HAND = "right"
 # Ekspor data riset
 EXPORT_CSV   = "rosa_export.csv"
 EXPORT_JSONL = "rosa_export.jsonl"
+EXPORT_XLSX  = "rosa_summary.xlsx"

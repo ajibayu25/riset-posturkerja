@@ -14,7 +14,7 @@ from . import ComponentOutput
 def mouse_components(skeleton: Skeleton2D) -> ComponentOutput:
     """Placeholder mouse metrics (extend with real heuristics as available)."""
     queries: Dict[str, int] = {
-        "neck_twist_gt_30": 0,
+        "neck_twist_greater_than_30_deg": 0,
     }
     return ComponentOutput(base=0, adjustments={}, metrics={}, queries=queries)
 
@@ -22,7 +22,7 @@ def mouse_components(skeleton: Skeleton2D) -> ComponentOutput:
 def keyboard_components(skeleton: Skeleton2D) -> ComponentOutput:
     """Use neck twist and typing deviation heuristics."""
     queries: Dict[str, int] = {
-        "typing_deviation": 0,
+        "deviation_while_typing": 0,
     }
     cfg = SECTION_C_THRESHOLDS["keyboard"]
     metrics: Dict[str, float] = {}
@@ -30,7 +30,7 @@ def keyboard_components(skeleton: Skeleton2D) -> ComponentOutput:
     neck_twist = skeleton.neck_sidebend()
     metrics["neck_sidebend"] = neck_twist
     if not np.isnan(neck_twist) and abs(neck_twist) > cfg["wrist_deviation_deg"]:
-        queries["typing_deviation"] = 1
+        queries["deviation_while_typing"] = 1
 
     return ComponentOutput(base=0, adjustments={}, metrics=metrics, queries=queries)
 

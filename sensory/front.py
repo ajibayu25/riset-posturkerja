@@ -9,6 +9,7 @@ import numpy as np
 from constants.thresholds import SECTION_B_ADJUSTMENTS, SECTION_B_THRESHOLDS
 from core.geometry import Skeleton2D, distance
 from . import ComponentOutput
+from .side import get_work_surface_flag
 
 BBox = Tuple[int, int, int, int]
 
@@ -28,11 +29,8 @@ def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentO
         "too_wide": 0,
         "work_surface_too_high": 0,
         "too_far_of_reach_outside_30_cm": 0,
-        "mouse_in_line_with_shoulder": 0,
-        "reaching_to_mouse": 0,
-        "mouse_keyboard_on_different_surfaces": 0,
-        "pinch_grip_on_mouse": 0,
-        "keyboard_too_high_shoulders_shrugged": 0,
+        "neck_and_shoulder_hold": 0,
+        "no_hands_free_options": 0,
     }
     metrics: Dict[str, float] = {}
     adjustments: Dict[str, int] = {}
@@ -90,34 +88,14 @@ def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentO
 
     # Compare wrist elevation to elbow height; large positive differences imply arms
     # are lifted to reach a high work surface (ROSA Section B monitor axis).
+    work_flag = get_work_surface_flag()
     if left_wrist is not None and right_wrist is not None and left_elbow is not None and right_elbow is not None:
         wrist_heights = [float(elbow[1] - wrist[1]) for wrist, elbow in ((left_wrist, left_elbow), (right_wrist, right_elbow))]
         metrics["wrist_above_elbow_avg"] = float(np.mean(wrist_heights))
-        if all(diff > 0.12 * torso_len for diff in wrist_heights):
-            queries["work_surface_too_high"] = 1
         if all(diff > 0.18 * torso_len for diff in wrist_heights):
             queries["keyboard_too_high_shoulders_shrugged"] = 1
-        wrist_height_delta = abs(wrist_heights[0] - wrist_heights[1])
-        if wrist_height_delta > 0.12 * torso_len:
-            queries["mouse_keyboard_on_different_surfaces"] = 2
-
-    # Horizontal deviation of the dominant wrist from the shoulder indicates
-    # whether the mouse stays in-line or requires reaching.
-    if right_wrist is not None and right_shoulder is not None and not np.isnan(shoulder_width):
-        horiz = float(right_wrist[0] - right_shoulder[0])
-        metrics["mouse_horizontal_offset"] = horiz
-        if abs(horiz) <= 0.20 * shoulder_width:
-            queries["mouse_in_line_with_shoulder"] = 1
-        if abs(horiz) > 0.45 * shoulder_width:
-            queries["reaching_to_mouse"] = 2
-
-    if left_wrist is not None and right_wrist is not None and left_elbow is not None and right_elbow is not None:
-        elbow_span = float(np.abs(left_elbow[0] - right_elbow[0]))
-        metrics["elbow_span"] = elbow_span
-        # A small difference between elbow span and wrist span indicates the
-        # user is keeping the mouse close to the body's midline and pinching the device.
-        if abs(wrist_span - elbow_span) < 0.10 * shoulder_width:
-            queries["pinch_grip_on_mouse"] = 1
+    if work_flag:
+        queries["work_surface_too_high"] = work_flag
 
     if bbox is not None and shoulder_mid is not None:
         x1, y1, x2, y2 = bbox

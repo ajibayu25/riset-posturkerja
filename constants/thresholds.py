@@ -125,6 +125,14 @@ SECTION_B_THRESHOLDS = {
         "shoulder_hold_distance_cm": 6.0,
         # Default biacromial breadth for px→cm scaling when only pose landmarks exist.
         "shoulder_breadth_cm": 38.0,
+        # Mouse inline thresholds (ratios relative to shoulder width).
+        "mouse_inline_offset_ratio_max": 0.25,
+        "mouse_inline_abduction_deg": 20.0,
+        "mouse_inline_reach_ratio": 0.7,
+        # Mouse reaching thresholds.
+        "mouse_reach_offset_ratio_min": 0.45,
+        "mouse_reach_abduction_deg": 25.0,
+        "mouse_reach_ratio": 1.0,
     },
     "monitor": {
         "distance_cm": {
@@ -175,15 +183,21 @@ SECTION_C_THRESHOLDS = {
     "mouse": {
         # Horizontal offset from shoulder line (cm)
         "lateral_offset_cm": {
-            "inline_max": 5.0,
+            "inline_max": 12.0,
             "reach_min": 12.0,
         },
+        "reach_inline_cm_max": 35.0,
+        "reach_cm_min": 40.0,
+        "inline_abduction_deg": 20.0,
+        "reaching_abduction_deg": 25.0,
+        "shoulder_breadth_cm": 38.0,
         # Vertical level difference relative to keyboard plane
         "surface_height_diff_cm": 2.0,
         # Wrist posture limits
         "wrist_extension_deg": 15.0,
         "wrist_deviation_deg": 15.0,
-        # Detect pinch grip via contact area fraction (heuristic)
+        # Detect pinch grip via contact area fraction (overhead detection)
+        "contact_area_ratio_max": 0.35,
         "grip_contact_ratio": 0.35,
     },
     "keyboard": {
@@ -202,6 +216,7 @@ SECTION_C_ADJUSTMENTS = {
         "reach": 2,
         "different_surface": 2,
         "pinch_grip": 1,
+        "pinch_area": 1,
         "hard_palm_rest": 1,
         "non_adjustable_platform": 1,
     },

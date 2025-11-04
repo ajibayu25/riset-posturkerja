@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -83,9 +83,12 @@ class SectionCScorer:
         hand_preference: str,
         total_seconds: float,
         continuous_seconds: float,
+        *,
+        mouse_bbox: Optional[Tuple[int, int, int, int]] = None,
+        hand_bboxes: Optional[List[Tuple[int, int, int, int]]] = None,
     ) -> SectionCResult:
         """Main entry to produce Section C score and breakdown."""
-        mouse_comp = mouse_components(skeleton)
+        mouse_comp = mouse_components(skeleton, mouse_bbox, hand_bboxes or [], hand_preference)
         keyboard_comp = keyboard_components(skeleton)
 
         mouse_score = AxisScore(

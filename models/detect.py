@@ -24,6 +24,56 @@ class ObjectDetector:
         return self.model.predict(source=frame, device=self.device, verbose=False)[0]
 
     @staticmethod
+    def pick_mouse_bbox(prediction, labels: Tuple[str, ...] = ("mouse",)) -> Optional[BBox]:
+        """Return the highest-confidence mouse bounding box from detector output."""
+        if (
+            prediction is None
+            or getattr(prediction, "boxes", None) is None
+            or len(prediction.boxes) == 0
+        ):
+            return None
+        names = prediction.names
+        boxes = prediction.boxes
+        best_conf = -1.0
+        best_coords = None
+        for idx in range(len(boxes)):
+            label = names.get(int(boxes.cls[idx]), "")
+            if labels and label not in labels:
+                continue
+            conf = float(boxes.conf[idx].item())
+            if conf <= best_conf:
+                continue
+            best_conf = conf
+            best_coords = boxes.xyxy[idx].tolist()
+        if best_coords is None:
+            return None
+        x1, y1, x2, y2 = map(int, best_coords)
+        return x1, y1, x2, y2
+
+    @staticmethod
+    def collect_hand_bboxes(prediction, labels: Optional[Tuple[str, ...]] = None, min_conf: float = 0.15) -> List[BBox]:
+        """Extract hand bounding boxes from a detector prediction."""
+        if (
+            prediction is None
+            or getattr(prediction, "boxes", None) is None
+            or len(prediction.boxes) == 0
+        ):
+            return []
+        names = prediction.names
+        boxes = prediction.boxes
+        hand_boxes: List[BBox] = []
+        for idx in range(len(boxes)):
+            label = names.get(int(boxes.cls[idx]), "")
+            conf = float(boxes.conf[idx].item())
+            if conf < min_conf:
+                continue
+            if labels and label not in labels:
+                continue
+            coords = tuple(map(int, boxes.xyxy[idx].tolist()))
+            hand_boxes.append(coords)  # type: ignore[arg-type]
+        return hand_boxes
+
+    @staticmethod
     def pick_monitor_bbox(prediction) -> Optional[BBox]:
         if prediction is None or prediction.boxes is None or len(prediction.boxes) == 0:
             return None

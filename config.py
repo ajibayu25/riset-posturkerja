@@ -3,6 +3,7 @@ DEVICE       = "cpu"       # default to CPU; set "cuda" if GPU available
 POSE_MODEL   = "yolov8n-pose.pt"
 DET_MODEL    = "yolov8n.pt"
 EARPHONE_MODEL = "yolo-earphone.pt"
+HAND_MODEL  = "yolo-handdetection.pt"
 FPS_TARGET   = 30
 
 # Camera assignment per ROSA section (A: chair, B: monitor, C: peripherals)
@@ -18,7 +19,8 @@ CAMERA_INDEX = {
 CAMERA_PRESETS = [
     ("None", None),
     ("HD Webcam", 0),
-    ("Logi C270 HD WebCam", 1),
+    ("HD Pro Webcam C920", 1),
+    ("Integrated Camera", 2),
 ]
 
 # Mouse hand preference for Section C

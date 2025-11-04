@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
-from constants.thresholds import SECTION_A_THRESHOLDS, SECTION_A_ADJUSTMENTS
+from constants.thresholds import SECTION_A_THRESHOLDS, SECTION_A_ADJUSTMENTS, SECTION_C_THRESHOLDS
 from core.geometry import Skeleton2D, distance
 from . import ComponentOutput
 
+
+_MOUSE_SURFACE_FLAG = 0
+_WORK_SURFACE_FLAG = 0
 
 def seat_height_components(skeleton: Skeleton2D) -> ComponentOutput:
     """Evaluate knee flexion, foot contact, and under-desk space."""
@@ -105,7 +108,7 @@ def armrest_components(skeleton: Skeleton2D) -> ComponentOutput:
     left_elbow = skeleton.point("left_elbow")
     right_elbow = skeleton.point("right_elbow")
 
-    if None in (left_shoulder, right_shoulder, left_elbow, right_elbow):
+    if any(pt is None for pt in (left_shoulder, right_shoulder, left_elbow, right_elbow)):
         return ComponentOutput(base=base, adjustments={}, metrics=metrics, queries=queries)
 
     shoulder_y = float((left_shoulder[1] + right_shoulder[1]) / 2.0)
@@ -187,10 +190,100 @@ def back_support_components(skeleton: Skeleton2D) -> ComponentOutput:
     )
 
 
+
+
+def assess_mouse_keyboard_surfaces(
+    skeleton: Skeleton2D,
+    hand_preference: str = "right",
+) -> Dict[str, float]:
+    """Estimate height gap between mouse and keyboard surfaces from side view."""
+    cfg = SECTION_C_THRESHOLDS["mouse"]
+    metrics: Dict[str, float] = {}
+    dominant = hand_preference.lower()
+    if dominant not in {"left", "right"}:
+        dominant = "right"
+    wrist_dom = skeleton.point(f"{dominant}_wrist")
+    wrist_other = skeleton.point("left_wrist" if dominant == "right" else "right_wrist")
+    if wrist_dom is None or wrist_other is None:
+        _set_mouse_surface_flag(0)
+        return metrics
+    shoulder_width = skeleton.shoulder_width()
+    if not np.isnan(shoulder_width) and shoulder_width > 1e-3:
+        px_per_cm = shoulder_width / cfg.get("shoulder_breadth_cm", 38.0)
+    else:
+        px_per_cm = 10.0
+    diff_cm = abs(float(wrist_dom[1] - wrist_other[1])) / max(px_per_cm, 1e-3)
+    metrics["mouse_keyboard_surface_diff_cm"] = diff_cm
+    flag = 2 if diff_cm > cfg["surface_height_diff_cm"] else 0
+    metrics["mouse_keyboard_surface_flag"] = flag
+    _set_mouse_surface_flag(flag)
+    return metrics
+
+
+def assess_work_surface_elevation(
+    skeleton: Skeleton2D,
+    hand_preference: str = "right",
+) -> Dict[str, float]:
+    """Estimate shoulder shrug posture indicating work surface too high."""
+    metrics: Dict[str, float] = {}
+    shoulder_mid = skeleton.shoulder_mid()
+    hip_mid = skeleton.hip_mid()
+    if shoulder_mid is None or hip_mid is None:
+        _set_work_surface_flag(0)
+        return metrics
+    torso_len = float(distance(shoulder_mid, hip_mid))
+    if torso_len < 1e-3 or np.isnan(torso_len):
+        torso_len = skeleton.shoulder_width()
+    if torso_len < 1e-3 or np.isnan(torso_len):
+        torso_len = 100.0
+
+    left_elbow = skeleton.point("left_elbow")
+    right_elbow = skeleton.point("right_elbow")
+    left_wrist = skeleton.point("left_wrist")
+    right_wrist = skeleton.point("right_wrist")
+    if any(v is None for v in (left_elbow, right_elbow, left_wrist, right_wrist)):
+        _set_work_surface_flag(0)
+        return metrics
+
+    wrist_heights = [
+        float(elbow[1] - wrist[1])
+        for elbow, wrist in ((left_elbow, left_wrist), (right_elbow, right_wrist))
+    ]
+    metrics["work_surface_wrist_diff_px"] = float(np.mean(wrist_heights))
+
+    flag = 0
+    if wrist_heights and all(diff > 0.12 * torso_len for diff in wrist_heights):
+        flag = 1
+    metrics["work_surface_flag"] = flag
+    _set_work_surface_flag(flag)
+    return metrics
+
+
+def _set_mouse_surface_flag(value: int) -> None:
+    global _MOUSE_SURFACE_FLAG
+    _MOUSE_SURFACE_FLAG = value
+
+
+def get_mouse_surface_flag() -> int:
+    return _MOUSE_SURFACE_FLAG
+
+
+def _set_work_surface_flag(value: int) -> None:
+    global _WORK_SURFACE_FLAG
+    _WORK_SURFACE_FLAG = value
+
+
+def get_work_surface_flag() -> int:
+    return _WORK_SURFACE_FLAG
+
+
 __all__ = [
     "seat_height_components",
     "seat_depth_components",
     "armrest_components",
     "back_support_components",
+    "assess_mouse_keyboard_surfaces",
+    "assess_work_surface_elevation",
+    "get_mouse_surface_flag",
+    "get_work_surface_flag",
 ]
-

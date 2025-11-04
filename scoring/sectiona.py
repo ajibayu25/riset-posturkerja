@@ -26,6 +26,7 @@ from sensory.side import (
     back_support_components,
     seat_depth_components,
     seat_height_components,
+    get_work_surface_flag,
 )
 
 
@@ -106,6 +107,8 @@ class SectionAScorer:
         query_breakdown: Dict[str, int] = {}
         for comp in (seat_height_comp, seat_depth_comp, armrest_comp, back_support_comp):
             query_breakdown.update(comp.queries)
+        work_flag = int(get_work_surface_flag())
+        query_breakdown["work_surface_too_high"] = work_flag
 
         vertical_axis = seat_height.total + seat_depth.total
         horizontal_axis = armrest.total + back_support.total

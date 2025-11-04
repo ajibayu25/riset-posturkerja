@@ -16,6 +16,8 @@ import platform
 
 import subprocess
 
+import json
+
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
@@ -33,27 +35,17 @@ from PIL import Image, ImageTk
 
 
 from config import (
-
     CAMERA_INDEX,
-
     CAMERA_PRESETS,
-
     DET_MODEL,
-
     EARPHONE_MODEL,
-
+    HAND_MODEL,
     DEVICE,
-
     EXPORT_CSV,
-
     EXPORT_JSONL,
-
     EXPORT_XLSX,
-
     POSE_MODEL,
-
     SECTIONC_HAND,
-
 )
 
 from constants.grids import (
@@ -111,6 +103,7 @@ from scoring.sectiona import SectionAScorer
 from scoring.sectionb import SectionBScorer
 
 from scoring.sectionc import SectionCScorer
+from sensory.side import assess_mouse_keyboard_surfaces, assess_work_surface_elevation
 
 
 
@@ -124,8 +117,6 @@ QUERY_DISPLAY = {
 
         ('too_wide', 'Too Wide', 1),
 
-        ('work_surface_too_high', 'Work Surface too High', 1),
-
         ('headset_or_one_hand_on_phone_neutral_neck_posture', 'Headset / One Hand on Phone & Neutral Neck Posture', 1),
 
         ('too_far_of_reach_outside_30_cm', 'Too Far of Reach (outside of 30 cm)', 2),
@@ -133,14 +124,6 @@ QUERY_DISPLAY = {
         ('neck_and_shoulder_hold', 'Neck and Shoulder Hold', 2),
 
         ('no_hands_free_options', 'No Hands-Free Options', 1),
-
-        ('mouse_in_line_with_shoulder', 'Mouse in line with shoulder', 1),
-
-        ('reaching_to_mouse', 'Reaching to mouse', 2),
-
-        ('mouse_keyboard_on_different_surfaces', 'Mouse/Keyboard on different surfaces', 2),
-
-        ('pinch_grip_on_mouse', 'Pinch grip on mouse', 1),
 
         ('keyboard_too_high_shoulders_shrugged', 'Keyboard too high - shoulders shrugged', 1),
 
@@ -173,8 +156,9 @@ QUERY_DISPLAY = {
         ('no_back_support_or_worker_leaning_forward', 'No back support (e.g., stool or worker leaning forward)', 3),
 
         ('hard_or_damaged_surface', 'Hard / damaged surface', 1),
-
+        ('work_surface_too_high', 'Work Surface too High', 1),
         ('armrests_too_wide', 'Armrests too wide', 1),
+        ('mouse_keyboard_on_different_surfaces', 'Mouse/Keyboard on different surfaces', 2),
 
     ],
 
@@ -183,6 +167,9 @@ QUERY_DISPLAY = {
         ('neck_twist_greater_than_30_deg', 'Neck twist greater than 30 deg', 1),
 
         ('deviation_while_typing', 'Deviation while typing', 1),
+        ('mouse_in_line_with_shoulder', 'Mouse in line with shoulder', 1),
+        ('reaching_to_mouse', 'Reaching to mouse', 2),
+        ('pinch_grip_on_mouse', 'Pinch grip on mouse', 1),
 
     ],
 
@@ -423,166 +410,102 @@ class BasePipeline:
 
 
 class SectionAPipeline(BasePipeline):
-
     """Pipeline handling side camera (Section A chair scoring)."""
 
     def __init__(self, cam_index: int, export_mode: str = "csv", smoothing_alpha: float = 0.3) -> None:
-
-        """Initialise ROSA Section A scorer for a dedicated camera feed."""
-
         super().__init__(cam_index, export_mode, smoothing_alpha)
-
         self.scorer = SectionAScorer()
-
         self._last_result: Optional[SectionAResult] = None
-
-        self._last_summary: Optional[Dict[str, float]] = None
-
+        self._last_summary: Optional[Dict[str, Any]] = None
         self._last_updated_ts: float = 0.0
-
-
+        self._last_mouse_bbox: Optional[BBox] = None
 
     def process_frame(self, frame: np.ndarray, keypoints: Optional[np.ndarray], timestamp: float, evaluate: bool) -> PipelineResult:
-
         """Render overlays and compute Section A metrics for the current frame."""
-
         display = frame.copy()
+        previous = self._last_summary or {}
+        prev_queries = previous.get("queries", {})
+        prev_metrics = previous.get("metrics", {})
 
         if keypoints is None:
-
-            display = put_text_lines(display, ["No pose detected"], color=(0, 0, 255))
-
-            previous = self._last_summary or {}
-
-            prev_queries = previous.get("queries", {})
-
             summary = {
-
                 "score": previous.get("score", float("nan")),
-
                 "queries": dict(prev_queries) if isinstance(prev_queries, dict) else {},
-
+                "metrics": dict(prev_metrics) if isinstance(prev_metrics, dict) else {},
                 "updated_at": previous.get("updated_at", 0.0),
-
                 "vertical_axis": previous.get("vertical_axis"),
-
                 "horizontal_axis": previous.get("horizontal_axis"),
-
                 "section_result": previous.get("section_result"),
-
                 "just_updated": False,
-
             }
-
+            display = put_text_lines(display, ["No pose detected"], color=(0, 0, 255))
             return PipelineResult(display, summary)
 
-
-
         display = draw_skeleton(display, keypoints)
-
         skeleton = Skeleton2D.from_array(keypoints)
 
-
-
-        previous = self._last_summary or {}
-
-        prev_queries = previous.get("queries", {})
+        surface_metrics = assess_mouse_keyboard_surfaces(skeleton, SECTIONC_HAND)
+        work_metrics = assess_work_surface_elevation(skeleton, SECTIONC_HAND)
 
         just_updated = False
-
         if evaluate:
-
             total_seconds = timestamp - self.session_start
-
             continuous_seconds = timestamp - self.continuous_start
-
             result = self.scorer.score(
-
                 skeleton,
-
                 total_seconds,
-
                 continuous_seconds,
-
             )
-
             self._last_result = result
-
             self._last_updated_ts = result.timestamp
-
             self._maybe_export(result.to_row())
-
             just_updated = True
-
         result_obj = self._last_result
 
-
-
         if result_obj is not None:
-
             lines = [
-
                 f"Section A score {result_obj.chair_score_final} (base {result_obj.chair_score_base}, dur {result_obj.duration_adjustment:+d})",
-
                 f"Vertical axis: {result_obj.vertical_axis} | Horizontal axis: {result_obj.horizontal_axis}",
-
                 f"Seat height {result_obj.seat_height.total} | Seat depth {result_obj.seat_depth.total}",
-
                 f"Armrest {result_obj.armrest.total} | Back support {result_obj.back_support.total}",
-
             ]
-
             risk = "OK" if result_obj.chair_score_final < 5 else "High"
-
             lines.append(f"Risk: {risk}")
-
             display = put_text_lines(display, lines)
-
             summary = {
-
                 "score": result_obj.chair_score_final,
-
                 "vertical_axis": result_obj.vertical_axis,
-
                 "horizontal_axis": result_obj.horizontal_axis,
-
-                "queries": result_obj.query_breakdown,
-
+                "queries": dict(result_obj.query_breakdown),
+                "metrics": {},
                 "updated_at": self._last_updated_ts,
-
                 "section_result": result_obj,
-
                 "just_updated": just_updated,
-
             }
-
         else:
-
             summary = {
-
                 "score": float("nan"),
-
                 "queries": dict(prev_queries) if isinstance(prev_queries, dict) else {},
-
-                "updated_at": 0.0,
-
-                "vertical_axis": None,
-
-                "horizontal_axis": None,
-
+                "metrics": dict(prev_metrics) if isinstance(prev_metrics, dict) else {},
+                "updated_at": previous.get("updated_at", 0.0),
+                "vertical_axis": previous.get("vertical_axis"),
+                "horizontal_axis": previous.get("horizontal_axis"),
                 "section_result": None,
-
                 "just_updated": False,
-
             }
+
+        queries = summary.get("queries", {})
+        queries["mouse_keyboard_on_different_surfaces"] = int(surface_metrics.get("mouse_keyboard_surface_flag", 0))
+        queries["work_surface_too_high"] = int(work_metrics.get("work_surface_flag", 0))
+        summary["queries"] = queries
+
+        metrics = summary.get("metrics", {})
+        metrics.update(surface_metrics)
+        metrics.update(work_metrics)
+        summary["metrics"] = metrics
 
         self._last_summary = summary
-
         return PipelineResult(display, summary)
-
-
-
-
 
 class SectionBPipeline(BasePipeline):
 
@@ -827,12 +750,17 @@ class SectionCPipeline(BasePipeline):
         smoothing_alpha: float = 0.3,
 
         hand_preference: str = "right",
+        detection_stride: int = 5,
 
     ) -> None:
 
         """Store settings for mouse-hand dominance and instantiate scorer."""
 
         super().__init__(cam_index, export_mode, smoothing_alpha)
+
+        self.detector = ObjectDetector(model_path=DET_MODEL, device=DEVICE)
+
+        self.hand_detector = ObjectDetector(model_path=HAND_MODEL, device=DEVICE)
 
         self.scorer = SectionCScorer()
 
@@ -843,6 +771,13 @@ class SectionCPipeline(BasePipeline):
         self._last_summary: Optional[Dict[str, float]] = None
 
         self._last_updated_ts: float = 0.0
+
+        self._last_mouse_bbox: Optional[BBox] = None
+
+        self._last_hand_bboxes: List[BBox] = []
+
+        self.detection_stride = max(1, detection_stride)
+        self._frame_index = 0
 
 
 
@@ -874,6 +809,18 @@ class SectionCPipeline(BasePipeline):
 
         }
 
+        self._frame_index += 1
+        run_detection = (
+            evaluate
+            or self._last_mouse_bbox is None
+            or self._frame_index % self.detection_stride == 0
+        )
+        if run_detection:
+            detection = self.detector.predict(frame)
+            self._last_mouse_bbox = ObjectDetector.pick_mouse_bbox(detection)
+            hand_prediction = self.hand_detector.predict(frame)
+            self._last_hand_bboxes = ObjectDetector.collect_hand_bboxes(hand_prediction)
+
         if keypoints is None:
 
             display = put_text_lines(display, ["No pose detected"], color=(0, 0, 255))
@@ -885,6 +832,16 @@ class SectionCPipeline(BasePipeline):
         display = draw_skeleton(display, keypoints, color=(0, 255, 120))
 
         skeleton = Skeleton2D.from_array(keypoints)
+
+        surface_metrics = assess_mouse_keyboard_surfaces(skeleton, SECTIONC_HAND)
+
+        surface_flag = int(surface_metrics.get("mouse_keyboard_surface_flag", 0))
+
+        queries_dict = summary.setdefault("queries", {})
+
+        queries_dict["mouse_keyboard_on_different_surfaces"] = surface_flag
+
+        summary.setdefault("metrics", {}).update(surface_metrics)
 
         just_updated = False
 
@@ -904,6 +861,10 @@ class SectionCPipeline(BasePipeline):
 
                 continuous_seconds,
 
+                mouse_bbox=self._last_mouse_bbox,
+
+                hand_bboxes=self._last_hand_bboxes,
+
             )
 
             self._last_result = result
@@ -916,7 +877,14 @@ class SectionCPipeline(BasePipeline):
 
         result = self._last_result
 
+        mouse_bbox = self._last_mouse_bbox
+        if mouse_bbox is not None:
+            x1, y1, x2, y2 = map(int, mouse_bbox)
+            cv2.rectangle(display, (x1, y1), (x2, y2), (0, 120, 255), 2)
 
+        for hand_bbox in self._last_hand_bboxes:
+            hx1, hy1, hx2, hy2 = map(int, hand_bbox)
+            cv2.rectangle(display, (hx1, hy1), (hx2, hy2), (40, 200, 120), 2)
 
         if result is not None:
 
@@ -1337,29 +1305,39 @@ class MultiSectionTkApp:
             return []
 
         try:
-
             cmd = [
-
                 "powershell",
-
                 "-NoProfile",
-
                 "-Command",
-
-                "Get-CimInstance Win32_PnPEntity | Where-Object {$_.PNPClass -eq 'Camera'} | Select-Object -ExpandProperty Name",
-
+                (
+                    "Get-CimInstance Win32_PnPEntity "
+                    "| Where-Object {$_.PNPClass -eq 'Camera'} "
+                    "| Select-Object Name, Manufacturer "
+                    "| ConvertTo-Json -Depth 2"
+                ),
             ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
-
-            if result.returncode != 0:
-
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if result.returncode != 0 or not result.stdout.strip():
                 return []
-
-            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
+            payload = result.stdout.strip()
+            data = json.loads(payload)
+            if isinstance(data, dict):
+                records = [data]
+            else:
+                records = data
+            names: List[str] = []
+            for entry in records:
+                name = (entry or {}).get("Name", "")
+                manufacturer = (entry or {}).get("Manufacturer", "")
+                label = (name or "").strip()
+                if manufacturer:
+                    manu = manufacturer.strip()
+                    if manu and manu.lower() not in label.lower():
+                        label = f"{manu} {label}".strip()
+                if label:
+                    names.append(label)
+            return names
         except Exception:
-
             return []
 
 
@@ -1404,29 +1382,47 @@ class MultiSectionTkApp:
 
 
 
-        if names:
+        used_indices: Dict[int, str] = {}
 
-            label_counts: Dict[str, int] = {}
+        for label, idx in CAMERA_PRESETS:
 
-            for label, idx in zip(names, working_indices):
+            if idx is None:
 
-                count = label_counts.get(label, 0)
+                continue
 
-                label_counts[label] = count + 1
+            if idx in working_indices and idx not in used_indices:
 
-                display = f"{label} ({count + 1})" if count else label
+                available.append((label, idx))
 
-                available.append((display, idx))
+                used_indices[idx] = label
 
-            for idx in working_indices[len(names):]:
 
-                available.append((f"Camera {idx}", idx))
 
-        else:
+        name_iter = iter(names)
 
-            for idx in working_indices:
+        label_counts: Dict[str, int] = {}
 
-                available.append((f"Camera {idx}", idx))
+        for idx in working_indices:
+
+            if idx in used_indices:
+
+                continue
+
+            raw_name = next(name_iter, None)
+
+            if raw_name:
+
+                count = label_counts.get(raw_name, 0)
+
+                label_counts[raw_name] = count + 1
+
+                display = f"{raw_name} ({count + 1})" if count else raw_name
+
+            else:
+
+                display = f"Camera {idx}"
+
+            available.append((display, idx))
 
         return available
 

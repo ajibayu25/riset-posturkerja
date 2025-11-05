@@ -11,6 +11,7 @@ import threading
 import time
 
 from dataclasses import dataclass
+from collections import deque
 
 import platform
 
@@ -104,6 +105,7 @@ from scoring.sectiona import SectionAScorer
 from scoring.sectionb import SectionBScorer
 
 from scoring.sectionc import SectionCScorer
+from sensory.overhead import detect_palmrest
 from sensory.side import assess_mouse_keyboard_surfaces, assess_work_surface_elevation
 
 
@@ -171,6 +173,7 @@ QUERY_DISPLAY = {
         ('mouse_in_line_with_shoulder', 'Mouse in line with shoulder', 1),
         ('reaching_to_mouse', 'Reaching to mouse', 2),
         ('pinch_grip_on_mouse', 'Pinch grip on mouse', 1),
+        ('palmrest_in_front_of_mouse', 'Palmrest in front of mouse', 1),
 
     ],
 
@@ -814,6 +817,15 @@ class SectionCPipeline(BasePipeline):
         self.detection_stride = max(1, detection_stride)
         self._frame_index = 0
 
+        palm_cfg = SECTION_C_THRESHOLDS["mouse"].get("palmrest", {})
+        window = int(palm_cfg.get("vote_window_frames", 45) or 45)
+        self._palmrest_votes: deque[int] = deque(maxlen=max(1, window))
+        self._palmrest_confidence: float = 0.0
+        self._palmrest_bbox: Optional[BBox] = None
+        self._palmrest_corridor: Optional[np.ndarray] = None
+        self._palmrest_vote_ratio: float = float("nan")
+        self._palmrest_last_flag: Optional[bool] = None
+
 
 
     def process_frame(self, frame: np.ndarray, keypoints: Optional[np.ndarray], timestamp: float, evaluate: bool) -> PipelineResult:
@@ -843,6 +855,7 @@ class SectionCPipeline(BasePipeline):
             "just_updated": False,
 
         }
+        metrics_dict: Dict[str, float] = summary.setdefault("metrics", {})
 
         self._frame_index += 1
         run_detection = (
@@ -868,6 +881,56 @@ class SectionCPipeline(BasePipeline):
 
         skeleton = Skeleton2D.from_array(keypoints)
 
+        palm_detection = detect_palmrest(
+            frame,
+            skeleton,
+            self._last_hand_bboxes,
+            self.hand_preference,
+            self._last_mouse_bbox,
+        )
+        palm_metrics_raw = palm_detection.get("metrics", {}) or {}
+        corridor = palm_detection.get("corridor")
+        self._palmrest_corridor = (
+            np.asarray(corridor, dtype=int) if corridor is not None else None
+        )
+        bbox = palm_detection.get("bbox")
+        self._palmrest_bbox = tuple(map(int, bbox)) if bbox is not None else None
+        self._palmrest_confidence = float(palm_detection.get("confidence", 0.0))
+        if palm_detection.get("valid"):
+            flag_raw = bool(palm_detection.get("flag"))
+            self._palmrest_votes.append(1 if flag_raw else 0)
+            metrics_dict["palmrest_raw_flag"] = 1.0 if flag_raw else 0.0
+        else:
+            metrics_dict["palmrest_raw_flag"] = float("nan")
+        for key, value in palm_metrics_raw.items():
+            metrics_dict[f"palmrest_raw_{key}"] = float(value)
+        palm_cfg = SECTION_C_THRESHOLDS["mouse"].get("palmrest", {})
+        if self._palmrest_votes:
+            self._palmrest_vote_ratio = sum(self._palmrest_votes) / len(self._palmrest_votes)
+        else:
+            self._palmrest_vote_ratio = float("nan")
+        metrics_dict["palmrest_vote_ratio"] = self._palmrest_vote_ratio
+        metrics_dict["palmrest_samples"] = float(len(self._palmrest_votes))
+        metrics_dict["palmrest_confidence"] = self._palmrest_confidence
+        min_frames = int(palm_cfg.get("min_valid_frames", 15) or 15)
+        vote_ratio = float(palm_cfg.get("vote_ratio", 0.6))
+        if len(self._palmrest_votes) >= min_frames and not np.isnan(self._palmrest_vote_ratio):
+            if self._palmrest_vote_ratio >= vote_ratio:
+                palmrest_flag_smoothed: Optional[bool] = True
+            elif self._palmrest_vote_ratio <= (1.0 - vote_ratio):
+                palmrest_flag_smoothed = False
+            else:
+                palmrest_flag_smoothed = None
+        else:
+            palmrest_flag_smoothed = None
+        self._palmrest_last_flag = palmrest_flag_smoothed
+        summary["palmrest_status"] = palmrest_flag_smoothed
+        palmrest_metrics_for_score = {
+            "vote_ratio": self._palmrest_vote_ratio,
+            "confidence": self._palmrest_confidence,
+            "samples": float(len(self._palmrest_votes)),
+        }
+
         surface_metrics = assess_mouse_keyboard_surfaces(skeleton, SECTIONC_HAND)
 
         surface_flag = int(surface_metrics.get("mouse_keyboard_surface_flag", 0))
@@ -876,7 +939,7 @@ class SectionCPipeline(BasePipeline):
 
         queries_dict["mouse_keyboard_on_different_surfaces"] = surface_flag
 
-        summary.setdefault("metrics", {}).update(surface_metrics)
+        metrics_dict.update(surface_metrics)
 
         just_updated = False
 
@@ -900,6 +963,10 @@ class SectionCPipeline(BasePipeline):
 
                 hand_bboxes=self._last_hand_bboxes,
 
+                palmrest_flag=palmrest_flag_smoothed,
+
+                palmrest_metrics=palmrest_metrics_for_score,
+
             )
 
             self._last_result = result
@@ -920,6 +987,12 @@ class SectionCPipeline(BasePipeline):
         for hand_bbox in self._last_hand_bboxes:
             hx1, hy1, hx2, hy2 = map(int, hand_bbox)
             cv2.rectangle(display, (hx1, hy1), (hx2, hy2), (40, 200, 120), 2)
+
+        if self._palmrest_corridor is not None:
+            cv2.polylines(display, [np.asarray(self._palmrest_corridor, dtype=int)], True, (200, 200, 120), 1)
+        if self._palmrest_bbox is not None:
+            px, py, pw, ph = self._palmrest_bbox
+            cv2.rectangle(display, (px, py), (px + pw, py + ph), (255, 210, 70), 2)
 
         if result is not None:
 

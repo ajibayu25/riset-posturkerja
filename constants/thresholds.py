@@ -25,15 +25,22 @@ SECTION_A_THRESHOLDS = {
     "seat_height": {
         # Knee flexion close to 90 deg is desirable (CSA, 2000)
         "knee_angle_deg": {
+            "target": 90.0,
+            "ideal_tolerance_deg": 5.0,
             "neutral_min": 85.0,
             "neutral_max": 100.0,
-            "too_low_max": 85.0,
-            "too_high_min": 100.0,
+            "too_low_max": 90.0,
+            "too_high_min": 90.0,
         },
         # Approximate clearance to detect "insufficient space under desk"
         "legroom_clearance_cm_min": 5.0,
-        # Detect loss of foot contact with ground when heel height exceeds this ratio of shank length
-        "foot_contact_min_ratio": 0.05,
+        # Detect loss of foot contact when ankle drop is less than ~30% of hip-ankle length
+        "foot_contact_min_ratio": 0.20,
+        "foot_contact_min_drop_px": 15.0,
+        # Fallback anthropometrics for estimating pixel-to-centimetre scale
+        "leg_length_cm_fallback": 90.0,
+        # Ratio fallback when cm estimate unavailable (fraction of hip-to-ankle length)
+        "desk_clearance_ratio_min": 0.05,
     },
     "seat_depth": {
         # 7.5 cm (3") of clearance is ideal (CSA, 2000)
@@ -41,6 +48,12 @@ SECTION_A_THRESHOLDS = {
             "ideal": 7.5,
             "too_short_min": 10.0,  # > 10 cm indicates seat pan too short
             "too_long_max": 5.0,   # < 5 cm indicates seat depth too long
+        },
+        # Anthropometric fallback and ratio bounds when centimetre scale unavailable.
+        "thigh_length_cm_fallback": 46.0,
+        "clearance_ratio_limits": {
+            "min": 0.08,
+            "max": 0.20,
         },
     },
     "armrest": {

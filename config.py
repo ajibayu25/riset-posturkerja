@@ -8,9 +8,9 @@ FPS_TARGET   = 30
 
 # Camera assignment per ROSA section (A: chair, B: monitor, C: peripherals)
 CAMERA_INDEX = {
-    "A": 0,
-    "B": 1,
-    "C": 2,
+    "A": 0,  # Side view camera index (fallback if name matching fails)
+    "B": 2,  # Front view fallback index
+    "C": 1,  # Overhead view fallback index
 }
 
 # Friendly camera names exposed in the GUI OptionMenus.
@@ -19,9 +19,19 @@ CAMERA_INDEX = {
 CAMERA_PRESETS = [
     ("None", None),
     ("HD Webcam", 0),
-    ("HD Pro Webcam C920", 1),
     ("Integrated Camera", 2),
+    ("HD Pro Webcam C920", 1),
 ]
+
+# Section-specific camera name preferences to keep defaults flexible.
+# Each list entry is matched (case-insensitive substring) against the available
+# camera labels reported by the OS. The first match is chosen automatically.
+# Update the strings to reflect the devices you typically connect.
+CAMERA_DEFAULTS = {
+    "A": ["HD Webcam"],                 # Side
+    "B": ["Integrated Camera"],         # Front
+    "C": ["HD Pro Webcam", "C920"],     # Overhead
+}
 
 # Mouse hand preference for Section C
 SECTIONC_HAND = "right"

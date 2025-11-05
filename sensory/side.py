@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -10,11 +10,15 @@ from constants.thresholds import SECTION_A_THRESHOLDS, SECTION_A_ADJUSTMENTS, SE
 from core.geometry import Skeleton2D, distance
 from . import ComponentOutput
 
+BBox = Tuple[int, int, int, int]
 
 _MOUSE_SURFACE_FLAG = 0
 _WORK_SURFACE_FLAG = 0
 
-def seat_height_components(skeleton: Skeleton2D) -> ComponentOutput:
+def seat_height_components(
+    skeleton: Skeleton2D,
+    desk_info: Optional[Tuple[BBox, float]] = None,
+) -> ComponentOutput:
     """Evaluate knee flexion, foot contact, and under-desk space."""
     cfg = SECTION_A_THRESHOLDS["seat_height"]
     queries: Dict[str, int] = {
@@ -30,6 +34,7 @@ def seat_height_components(skeleton: Skeleton2D) -> ComponentOutput:
 
     # ROSA Section A expects knees close to 90 degrees. Capture both sides and average.
     angles: List[float] = []
+    leg_lengths: List[float] = []
     knee_cfg = cfg["knee_angle_deg"]
     for side in ("left", "right"):
         angle = skeleton.knee_angle(side)
@@ -41,32 +46,110 @@ def seat_height_components(skeleton: Skeleton2D) -> ComponentOutput:
     if angles:
         avg_angle = float(np.mean(angles))
         metrics["avg_knee_angle"] = avg_angle
-        if knee_cfg["neutral_min"] <= avg_angle <= knee_cfg["neutral_max"]:
-            queries["knees_at_90_deg"] = 1
-        if avg_angle < knee_cfg["too_low_max"]:
-            base = 2
-            queries["too_low_knee_angle_less_than_90_deg"] = 2
-        if avg_angle > knee_cfg["too_high_min"]:
+        target = knee_cfg.get("target", 90.0)
+        tolerance = knee_cfg.get("ideal_tolerance_deg", 5.0)
+        metrics["target_knee_angle"] = target
+        metrics["knee_angle_deviation"] = abs(avg_angle - target)
+        low_cutoff = knee_cfg["too_low_max"]
+        high_cutoff = knee_cfg["too_high_min"]
+        if avg_angle > high_cutoff:
             base = 2
             queries["too_high_knee_angle_greater_than_90_deg"] = 2
+        elif avg_angle < low_cutoff:
+            base = 2
+            queries["too_low_knee_angle_less_than_90_deg"] = 2
+        elif abs(avg_angle - target) <= tolerance:
+            queries["knees_at_90_deg"] = 1
 
     # CSA/ROSA expect feet flat on floor; use ankle drop relative to leg length
-    # to flag loss of contact.
+    # (hip-to-ankle) to flag loss of contact.
     foot_contact = True
+    min_ratio = cfg.get("foot_contact_min_ratio", 0.0)
+    min_drop_px = cfg.get("foot_contact_min_drop_px", 0.0)
     for side in ("left", "right"):
         hip = skeleton.point(f"{side}_hip")
         knee = skeleton.point(f"{side}_knee")
         ankle = skeleton.point(f"{side}_ankle")
         if hip is None or knee is None or ankle is None:
             continue
-        leg_len = distance(hip, ankle)
         drop = ankle[1] - knee[1]
-        metrics[f"{side}_ankle_drop"] = drop
-        if leg_len > 1e-3 and drop < 0.1 * leg_len:
+        metrics[f"{side}_ankle_drop_px"] = drop
+        # Immediate checks that do not require scaled ratios.
+        if drop <= 0.0 or drop < min_drop_px:
+            foot_contact = False
+
+        leg_len = distance(hip, ankle)
+        if leg_len <= 1e-3:
+            continue
+        if not np.isnan(leg_len):
+            leg_lengths.append(leg_len)
+        drop_ratio = drop / max(leg_len, 1e-3)
+        metrics[f"{side}_ankle_drop_ratio"] = drop_ratio
+        # Flag loss of contact if ankle fails ratio threshold as well.
+        if drop_ratio < min_ratio:
             foot_contact = False
     if not foot_contact:
         base = max(base, 3)
         queries["no_foot_contact_on_ground"] = 2
+
+    avg_leg_len = float(np.mean(leg_lengths)) if leg_lengths else float("nan")
+    metrics["avg_leg_length_px"] = avg_leg_len
+
+    desk_clearance_px = float("nan")
+    desk_clearance_cm = float("nan")
+    desk_clearance_ratio = float("nan")
+    metrics["desk_detection_available"] = 1 if desk_info is not None else 0
+
+    if desk_info is not None:
+        desk_bbox, desk_conf = desk_info
+        metrics["desk_detection_conf"] = float(desk_conf)
+        knee_mid = skeleton.knee_mid()
+        if knee_mid is not None:
+            x1, y1, x2, y2 = desk_bbox
+            # Only evaluate if knee is roughly within desk vertical span
+            vertical_margin = 40.0
+            if (y1 - vertical_margin) <= knee_mid[1] <= (y2 + vertical_margin):
+                desk_center_x = 0.5 * (x1 + x2)
+                if knee_mid[0] <= desk_center_x:
+                    desk_edge_x = float(x1)
+                    clearance_px = desk_edge_x - knee_mid[0]
+                else:
+                    desk_edge_x = float(x2)
+                    clearance_px = knee_mid[0] - desk_edge_x
+                desk_clearance_px = clearance_px
+                metrics["desk_edge_x_px"] = desk_edge_x
+                # Estimate pixels per centimetre using leg length
+                px_per_cm = float("nan")
+                leg_fallback_cm = cfg.get("leg_length_cm_fallback", 90.0)
+                if not np.isnan(avg_leg_len) and avg_leg_len > 1e-3 and leg_fallback_cm > 1e-3:
+                    px_per_cm = avg_leg_len / leg_fallback_cm
+                metrics["px_per_cm_leg_est"] = px_per_cm
+                if not np.isnan(px_per_cm) and px_per_cm > 1e-3:
+                    desk_clearance_cm = clearance_px / px_per_cm
+                ratio_min = cfg.get("desk_clearance_ratio_min", 0.05)
+                if not np.isnan(avg_leg_len) and avg_leg_len > 1e-3:
+                    desk_clearance_ratio = clearance_px / avg_leg_len
+                insufficient = clearance_px < 0
+                if not insufficient:
+                    clearance_goal_cm = cfg.get("legroom_clearance_cm_min", 5.0)
+                    if not np.isnan(desk_clearance_cm):
+                        insufficient = desk_clearance_cm < clearance_goal_cm
+                    elif not np.isnan(desk_clearance_ratio):
+                        insufficient = desk_clearance_ratio < ratio_min
+                if insufficient:
+                    queries["insufficient_space_under_desk_ability_to_cross_legs"] = 1
+                    adjustments["insufficient_legroom"] = SECTION_A_ADJUSTMENTS["seat_height"].get("insufficient_legroom", 1)
+            else:
+                metrics["desk_edge_x_px"] = float("nan")
+        else:
+            metrics["desk_edge_x_px"] = float("nan")
+    else:
+        metrics["desk_detection_conf"] = float("nan")
+        metrics["desk_edge_x_px"] = float("nan")
+
+    metrics["desk_clearance_px"] = desk_clearance_px
+    metrics["desk_clearance_cm"] = desk_clearance_cm
+    metrics["desk_clearance_ratio"] = desk_clearance_ratio
 
     return ComponentOutput(
         base=base,
@@ -76,17 +159,133 @@ def seat_height_components(skeleton: Skeleton2D) -> ComponentOutput:
     )
 
 
-def seat_depth_components(skeleton: Skeleton2D) -> ComponentOutput:
-    """Placeholder heuristics for seat-pan depth related indicators."""
+def seat_depth_components(
+    skeleton: Skeleton2D,
+    chair_info: Optional[Tuple[BBox, float]] = None,
+) -> ComponentOutput:
+    """Estimate seat-pan clearance relative to the knee using chair detection."""
     queries: Dict[str, int] = {
-        "approximately_three_inches_between_knee_and_seat_edge": 1,
+        "approximately_three_inches_between_knee_and_seat_edge": 0,
         "too_long_less_than_three_inches_of_space": 0,
         "too_short_more_than_three_inches_of_space": 0,
     }
+    metrics: Dict[str, float] = {
+        "chair_detection_available": 1 if chair_info is not None else 0,
+    }
+    base = 1
+
+    if chair_info is None:
+        metrics.update(
+            {
+                "chair_detection_conf": float("nan"),
+                "seat_clearance_px": float("nan"),
+                "seat_clearance_cm": float("nan"),
+                "seat_clearance_ratio": float("nan"),
+                "seat_edge_x_px": float("nan"),
+                "px_per_cm_thigh_est": float("nan"),
+                "avg_thigh_length_px": float("nan"),
+                "seat_depth_unclassified": 1,
+            }
+        )
+        return ComponentOutput(base=base, adjustments={}, metrics=metrics, queries=queries)
+
+    chair_bbox, chair_conf = chair_info
+    metrics["chair_detection_conf"] = float(chair_conf)
+
+    knee_mid = skeleton.knee_mid()
+    if knee_mid is None:
+        metrics.update(
+            {
+                "seat_clearance_px": float("nan"),
+                "seat_clearance_cm": float("nan"),
+                "seat_clearance_ratio": float("nan"),
+                "seat_edge_x_px": float("nan"),
+                "px_per_cm_thigh_est": float("nan"),
+                "avg_thigh_length_px": float("nan"),
+                "seat_depth_unclassified": 1,
+            }
+        )
+        return ComponentOutput(base=base, adjustments={}, metrics=metrics, queries=queries)
+
+    cx1, cy1, cx2, cy2 = chair_bbox
+    seat_center_x = 0.5 * (cx1 + cx2)
+    if knee_mid[0] >= seat_center_x:
+        seat_edge_x = float(cx2)
+        clearance_px = float(knee_mid[0] - seat_edge_x)
+        orientation = 1.0
+    else:
+        seat_edge_x = float(cx1)
+        clearance_px = float(seat_edge_x - knee_mid[0])
+        orientation = -1.0
+
+    metrics["seat_edge_x_px"] = seat_edge_x
+    metrics["seat_clearance_px"] = clearance_px
+    metrics["seat_orientation"] = orientation
+
+    thigh_lengths: List[float] = []
+    for side in ("left", "right"):
+        hip = skeleton.point(f"{side}_hip")
+        knee = skeleton.point(f"{side}_knee")
+        if hip is None or knee is None:
+            continue
+        length = distance(hip, knee)
+        if not np.isnan(length) and length > 1e-3:
+            thigh_lengths.append(length)
+
+    avg_thigh = float(np.mean(thigh_lengths)) if thigh_lengths else float("nan")
+    metrics["avg_thigh_length_px"] = avg_thigh
+
+    seat_depth_cfg = SECTION_A_THRESHOLDS["seat_depth"]
+    thigh_fallback = seat_depth_cfg.get("thigh_length_cm_fallback", 46.0)
+    px_per_cm = float("nan")
+    if not np.isnan(avg_thigh) and thigh_fallback > 1e-3:
+        px_per_cm = avg_thigh / thigh_fallback
+    metrics["px_per_cm_thigh_est"] = px_per_cm
+
+    clearance_cm_limits = seat_depth_cfg["clearance_cm"]
+    clearance_cm = float("nan")
+    if not np.isnan(px_per_cm) and px_per_cm > 1e-3:
+        clearance_cm = clearance_px / px_per_cm
+    metrics["seat_clearance_cm"] = clearance_cm
+
+    clearance_ratio = float("nan")
+    if not np.isnan(avg_thigh) and avg_thigh > 1e-3:
+        clearance_ratio = clearance_px / avg_thigh
+    metrics["seat_clearance_ratio"] = clearance_ratio
+
+    classified = False
+
+    if not np.isnan(clearance_cm):
+        classified = True
+        if clearance_px < 0 or clearance_cm < clearance_cm_limits["too_long_max"]:
+            base = 2
+            queries["too_long_less_than_three_inches_of_space"] = 2
+        elif clearance_cm > clearance_cm_limits["too_short_min"]:
+            base = 2
+            queries["too_short_more_than_three_inches_of_space"] = 2
+        else:
+            queries["approximately_three_inches_between_knee_and_seat_edge"] = 1
+    else:
+        ratio_limits = seat_depth_cfg.get("clearance_ratio_limits", {})
+        min_ratio = ratio_limits.get("min")
+        max_ratio = ratio_limits.get("max")
+        if min_ratio is not None and max_ratio is not None and not np.isnan(clearance_ratio):
+            classified = True
+            if clearance_px < 0 or clearance_ratio < float(min_ratio):
+                base = 2
+                queries["too_long_less_than_three_inches_of_space"] = 2
+            elif clearance_ratio > float(max_ratio):
+                base = 2
+                queries["too_short_more_than_three_inches_of_space"] = 2
+            else:
+                queries["approximately_three_inches_between_knee_and_seat_edge"] = 1
+
+    metrics["seat_depth_unclassified"] = 0 if classified else 1
+
     return ComponentOutput(
-        base=1,
+        base=base,
         adjustments={},
-        metrics={},
+        metrics=metrics,
         queries=queries,
     )
 

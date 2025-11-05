@@ -124,20 +124,86 @@ def mouse_components(
     return ComponentOutput(base=base, adjustments=adjustments, metrics=metrics, queries=queries)
 
 
-def keyboard_components(skeleton: Skeleton2D) -> ComponentOutput:
-    """Use neck twist and typing deviation heuristics."""
+def _match_hand_centers(
+    skeleton: Skeleton2D,
+    hand_bboxes: List[BBox],
+) -> Dict[str, np.ndarray]:
+    """Assign detected hand boxes to left/right wrists."""
+    assignments: Dict[str, np.ndarray] = {}
+    remaining = list(enumerate(hand_bboxes))
+    for side in ("left", "right"):
+        wrist = skeleton.point(f"{side}_wrist")
+        if wrist is None or not remaining:
+            continue
+        wrist_arr = np.asarray(wrist, dtype=float)
+        best_idx = None
+        best_dist = float("inf")
+        for idx, bbox in remaining:
+            x1, y1, x2, y2 = map(float, bbox)
+            center = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=float)
+            dist = float(np.linalg.norm(center - wrist_arr))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx is None:
+            continue
+        # Remove matched entry from remaining
+        for i, (original_idx, bbox) in enumerate(remaining):
+            if original_idx == best_idx:
+                x1, y1, x2, y2 = map(float, bbox)
+                assignments[side] = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=float)
+                remaining.pop(i)
+                break
+    return assignments
+
+
+def keyboard_components(
+    skeleton: Skeleton2D,
+    hand_bboxes: Optional[List[BBox]] = None,
+) -> ComponentOutput:
+    """Detect excessive radial/ulnar deviation while typing."""
     queries: Dict[str, int] = {
         "deviation_while_typing": 0,
     }
     cfg = SECTION_C_THRESHOLDS["keyboard"]
     metrics: Dict[str, float] = {}
+    adjustments: Dict[str, int] = {}
 
-    neck_twist = skeleton.neck_sidebend()
-    metrics["neck_sidebend"] = neck_twist
-    if not np.isnan(neck_twist) and abs(neck_twist) > cfg["wrist_deviation_deg"]:
+    hand_bboxes = hand_bboxes or []
+    assignments = _match_hand_centers(skeleton, hand_bboxes)
+
+    deviation_threshold = cfg.get("wrist_deviation_deg", 10.0)
+    max_deviation = 0.0
+    deviation_hits = 0
+
+    for side in ("left", "right"):
+        elbow = skeleton.point(f"{side}_elbow")
+        wrist = skeleton.point(f"{side}_wrist")
+        hand_center = assignments.get(side)
+        key = f"{side}_typing_deviation_deg"
+        if elbow is None or wrist is None or hand_center is None:
+            metrics[key] = float("nan")
+            continue
+        forearm_vec = np.asarray(wrist, dtype=float) - np.asarray(elbow, dtype=float)
+        hand_vec = hand_center - np.asarray(wrist, dtype=float)
+        if np.linalg.norm(forearm_vec) < 1e-3 or np.linalg.norm(hand_vec) < 1e-3:
+            metrics[key] = float("nan")
+            continue
+        deviation_deg = float(angle_between(forearm_vec, hand_vec))
+        metrics[key] = deviation_deg
+        max_deviation = max(max_deviation, deviation_deg)
+        if deviation_deg > deviation_threshold:
+            deviation_hits += 1
+
+    metrics["typing_max_deviation_deg"] = max_deviation
+    metrics["typing_deviation_hits"] = float(deviation_hits)
+    metrics["hand_bbox_count_keyboard"] = float(len(hand_bboxes))
+
+    if deviation_hits > 0:
         queries["deviation_while_typing"] = 1
+        adjustments["wrist_deviation"] = SECTION_C_ADJUSTMENTS["keyboard"].get("wrist_deviation", 1)
 
-    return ComponentOutput(base=0, adjustments={}, metrics=metrics, queries=queries)
+    return ComponentOutput(base=0, adjustments=adjustments, metrics=metrics, queries=queries)
 
 
 __all__ = ["mouse_components", "keyboard_components"]

@@ -93,9 +93,11 @@ class SectionAScorer:
         skeleton: Skeleton2D,
         total_seconds: float,
         continuous_seconds: float,
+        desk_info: Optional[Tuple[Tuple[int, int, int, int], float]] = None,
+        chair_info: Optional[Tuple[Tuple[int, int, int, int], float]] = None,
     ) -> SectionAResult:
-        seat_height_comp = seat_height_components(skeleton)
-        seat_depth_comp = seat_depth_components(skeleton)
+        seat_height_comp = seat_height_components(skeleton, desk_info)
+        seat_depth_comp = seat_depth_components(skeleton, chair_info)
         armrest_comp = armrest_components(skeleton)
         back_support_comp = back_support_components(skeleton)
 

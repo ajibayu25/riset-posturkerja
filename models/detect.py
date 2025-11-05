@@ -132,3 +132,76 @@ class ObjectDetector:
                 bbox = tuple(map(int, coords))
                 devices.append((label, conf, bbox))  # type: ignore[arg-type]
         return devices
+
+    @staticmethod
+    def pick_table_candidate(
+        prediction,
+        labels: Tuple[str, ...] = ("dining table", "table", "desk", "bench", "kitchen table"),
+        min_conf: float = 0.10,
+    ) -> Optional[Tuple[BBox, float]]:
+        """Return the highest scoring table/desk candidate (bbox, confidence)."""
+        if (
+            prediction is None
+            or getattr(prediction, "boxes", None) is None
+            or len(prediction.boxes) == 0
+        ):
+            return None
+        names = prediction.names
+        boxes = prediction.boxes
+        candidates: List[Tuple[float, float, List[float]]] = []
+        for idx in range(len(boxes)):
+            label = names.get(int(boxes.cls[idx]), "")
+            if label not in labels:
+                continue
+            conf = float(boxes.conf[idx].item())
+            if conf < min_conf:
+                continue
+            coords = boxes.xyxy[idx].tolist()
+            width = max(coords[2] - coords[0], 1.0)
+            height = max(coords[3] - coords[1], 1.0)
+            area = width * height
+            score = conf * area
+            candidates.append((score, conf, coords))
+        if not candidates:
+            return None
+        _, best_conf, best_coords = max(candidates, key=lambda item: item[0])
+        x1, y1, x2, y2 = map(int, best_coords)
+        return (x1, y1, x2, y2), best_conf
+
+    @staticmethod
+    def pick_chair_candidate(
+        prediction,
+        labels: Tuple[str, ...] = ("chair", "armchair", "couch"),
+        min_conf: float = 0.10,
+    ) -> Optional[Tuple[BBox, float]]:
+        """Return the most confident chair-like candidate (bbox, confidence)."""
+        if (
+            prediction is None
+            or getattr(prediction, "boxes", None) is None
+            or len(prediction.boxes) == 0
+        ):
+            return None
+        names = prediction.names
+        boxes = prediction.boxes
+        best_score = -1.0
+        best_entry: Optional[Tuple[List[float], float]] = None
+        for idx in range(len(boxes)):
+            label = names.get(int(boxes.cls[idx]), "")
+            if label not in labels:
+                continue
+            conf = float(boxes.conf[idx].item())
+            if conf < min_conf:
+                continue
+            coords = boxes.xyxy[idx].tolist()
+            width = max(coords[2] - coords[0], 1.0)
+            height = max(coords[3] - coords[1], 1.0)
+            area = width * height
+            score = conf * area
+            if score > best_score:
+                best_score = score
+                best_entry = (coords, conf)
+        if best_entry is None:
+            return None
+        coords, conf = best_entry
+        x1, y1, x2, y2 = map(int, coords)
+        return (x1, y1, x2, y2), conf

@@ -9,12 +9,13 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from config import DEVICE, EXPORT_CSV, EXPORT_JSONL, POSE_MODEL
+from config import DEVICE, EXPORT_CSV, EXPORT_JSONL, HAND_MODEL, POSE_MODEL
 from constants.grids import SECTIONC_MOUSE_KEYBOARD_GRID, SECTION_C_KEYBOARD_AXIS, SECTION_C_MOUSE_AXIS
 from core.geometry import Skeleton2D, clamp, distance
 from core.smoothing import EMA
 from core.timers import duration_adjust
 from rosa_io.exporters import export_csv, export_json
+from models.detect import ObjectDetector, BBox
 from models.pose import PoseEstimator
 from sensory.overhead import keyboard_components, mouse_components
 
@@ -89,7 +90,7 @@ class SectionCScorer:
     ) -> SectionCResult:
         """Main entry to produce Section C score and breakdown."""
         mouse_comp = mouse_components(skeleton, mouse_bbox, hand_bboxes or [], hand_preference)
-        keyboard_comp = keyboard_components(skeleton)
+        keyboard_comp = keyboard_components(skeleton, hand_bboxes or [])
 
         mouse_score = AxisScore(
             name="mouse",
@@ -159,6 +160,10 @@ class LiveSectionCApp:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.ema: Optional[EMA] = EMA(alpha=smoothing_alpha) if smoothing_alpha else None
         self.scorer = SectionCScorer()
+        self.hand_detector = ObjectDetector(model_path=HAND_MODEL, device=device or DEVICE)
+        self._hand_bboxes: List[BBox] = []
+        self._frame_idx = 0
+        self._hand_stride = 6
         self.session_start = time.time()
         self.continuous_start = self.session_start
         self.last_export_ts = 0.0
@@ -212,6 +217,10 @@ class LiveSectionCApp:
                     keypoints = self._apply_smoothing(keypoints[:, :2])
                     display = frame.copy()
                     skeleton = Skeleton2D.from_array(keypoints)
+                    self._frame_idx += 1
+                    if self._frame_idx % self._hand_stride == 0 or not self._hand_bboxes:
+                        hand_pred = self.hand_detector.predict(frame)
+                        self._hand_bboxes = ObjectDetector.collect_hand_bboxes(hand_pred)
                     now = time.time()
                     total_seconds = now - self.session_start
                     continuous_seconds = now - self.continuous_start
@@ -220,6 +229,7 @@ class LiveSectionCApp:
                         self.hand_preference,
                         total_seconds,
                         continuous_seconds,
+                        hand_bboxes=self._hand_bboxes,
                     )
                     self.last_result = result
                     overlay_lines = self._format_overlay(result)

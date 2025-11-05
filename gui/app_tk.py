@@ -35,6 +35,7 @@ from PIL import Image, ImageTk
 
 
 from config import (
+    CAMERA_DEFAULTS,
     CAMERA_INDEX,
     CAMERA_PRESETS,
     DET_MODEL,
@@ -90,7 +91,7 @@ from rosa_io.exporters import export_csv, export_json, export_excel_row
 
 from rosa_io.excel_schema import EXCEL_HEADERS, build_excel_row
 
-from models.detect import ObjectDetector
+from models.detect import ObjectDetector, BBox
 
 from models.pose import PoseEstimator
 
@@ -415,10 +416,16 @@ class SectionAPipeline(BasePipeline):
     def __init__(self, cam_index: int, export_mode: str = "csv", smoothing_alpha: float = 0.3) -> None:
         super().__init__(cam_index, export_mode, smoothing_alpha)
         self.scorer = SectionAScorer()
+        self.detector = ObjectDetector(model_path=DET_MODEL, device=DEVICE)
         self._last_result: Optional[SectionAResult] = None
         self._last_summary: Optional[Dict[str, Any]] = None
         self._last_updated_ts: float = 0.0
         self._last_mouse_bbox: Optional[BBox] = None
+        self._last_desk_info: Optional[Tuple[BBox, float]] = None
+        self._last_chair_info: Optional[Tuple[BBox, float]] = None
+        # Run heavy desk/chair detection sparingly to keep UI responsive.
+        self._desk_detection_stride = 15
+        self._frame_counter = 0
 
     def process_frame(self, frame: np.ndarray, keypoints: Optional[np.ndarray], timestamp: float, evaluate: bool) -> PipelineResult:
         """Render overlays and compute Section A metrics for the current frame."""
@@ -426,6 +433,25 @@ class SectionAPipeline(BasePipeline):
         previous = self._last_summary or {}
         prev_queries = previous.get("queries", {})
         prev_metrics = previous.get("metrics", {})
+
+        self._frame_counter += 1
+        run_detection = (
+            evaluate
+            or self._last_desk_info is None
+            or self._last_chair_info is None
+            or self._frame_counter % self._desk_detection_stride == 0
+        )
+        if run_detection:
+            detections = self.detector.predict(frame)
+            self._last_desk_info = ObjectDetector.pick_table_candidate(detections)
+            self._last_chair_info = ObjectDetector.pick_chair_candidate(detections)
+
+        if self._last_desk_info is not None:
+            (dx1, dy1, dx2, dy2), _conf = self._last_desk_info
+            cv2.rectangle(display, (dx1, dy1), (dx2, dy2), (180, 120, 20), 2)
+        if self._last_chair_info is not None:
+            (cx1, cy1, cx2, cy2), _ = self._last_chair_info
+            cv2.rectangle(display, (cx1, cy1), (cx2, cy2), (90, 180, 255), 2)
 
         if keypoints is None:
             summary = {
@@ -455,6 +481,8 @@ class SectionAPipeline(BasePipeline):
                 skeleton,
                 total_seconds,
                 continuous_seconds,
+                desk_info=self._last_desk_info,
+                chair_info=self._last_chair_info,
             )
             self._last_result = result
             self._last_updated_ts = result.timestamp
@@ -521,7 +549,7 @@ class SectionBPipeline(BasePipeline):
 
         smoothing_alpha: float = 0.3,
 
-        detection_stride: int = 5,
+        detection_stride: int = 10,
 
     ) -> None:
 
@@ -583,7 +611,14 @@ class SectionBPipeline(BasePipeline):
 
         self.frame_count += 1
 
-        if self.frame_count % self.detection_stride == 0:
+        run_detection = (
+            evaluate
+            or self.frame_count % self.detection_stride == 0
+            or self.last_monitor_bbox is None
+            or self.last_phone_bbox is None
+        )
+
+        if run_detection:
 
             detections = self.detector.predict(frame)
 
@@ -750,7 +785,7 @@ class SectionCPipeline(BasePipeline):
         smoothing_alpha: float = 0.3,
 
         hand_preference: str = "right",
-        detection_stride: int = 5,
+        detection_stride: int = 12,
 
     ) -> None:
 
@@ -1429,15 +1464,21 @@ class MultiSectionTkApp:
 
 
     def _default_camera_choice(self, section: str) -> str:
-
-        """Pick initial dropdown value based on config CAMERA_INDEX."""
+        """Pick initial dropdown value using flexible name preferences."""
+        preferences = CAMERA_DEFAULTS.get(section, [])
+        for pref in preferences:
+            pref_norm = (pref or "").strip().lower()
+            if not pref_norm:
+                continue
+            for label, _ in self.camera_presets:
+                if label.lower() == "none":
+                    continue
+                if pref_norm in label.lower():
+                    return label
 
         desired = CAMERA_INDEX.get(section)
-
         for label, value in self.camera_presets:
-
             if value == desired:
-
                 return label
 
         return self.camera_presets[0][0]

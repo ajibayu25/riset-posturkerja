@@ -95,8 +95,17 @@ class SectionAScorer:
         continuous_seconds: float,
         desk_info: Optional[Tuple[Tuple[int, int, int, int], float]] = None,
         chair_info: Optional[Tuple[Tuple[int, int, int, int], float]] = None,
+        palmrest_flag: Optional[bool] = None,
+        palmrest_metrics: Optional[Dict[str, float]] = None,
     ) -> SectionAResult:
         seat_height_comp = seat_height_components(skeleton, desk_info)
+        # Side-view palmrest detection is treated as part of the seat-height component
+        # because ROSA awards the (+1) within Section A vertical axis.
+        if palmrest_metrics:
+            for key, value in palmrest_metrics.items():
+                seat_height_comp.metrics[f"palmrest_{key}"] = float(value)
+        if palmrest_flag is not None:
+            seat_height_comp.metrics["palmrest_flag"] = 1.0 if palmrest_flag else 0.0
         seat_depth_comp = seat_depth_components(skeleton, chair_info)
         armrest_comp = armrest_components(skeleton)
         back_support_comp = back_support_components(skeleton)
@@ -111,6 +120,11 @@ class SectionAScorer:
             query_breakdown.update(comp.queries)
         work_flag = int(get_work_surface_flag())
         query_breakdown["work_surface_too_high"] = work_flag
+        # Explicitly stamp palmrest query so exports never miss the column.
+        if palmrest_flag is True:
+            query_breakdown["palmrest_in_front_of_mouse"] = 1
+        elif palmrest_flag is False:
+            query_breakdown["palmrest_in_front_of_mouse"] = 0
 
         vertical_axis = seat_height.total + seat_depth.total
         horizontal_axis = armrest.total + back_support.total

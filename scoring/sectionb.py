@@ -90,7 +90,11 @@ class SectionBScorer:
         total_seconds: float,
         continuous_seconds: float,
     ) -> SectionBResult:
-        """Main entry: compute axes, grid lookup, and duration adjustments."""
+        """Main entry: compute axes, grid lookup, and duration adjustments.
+
+        The ROSA manual treats monitor and telephone axes independently; we
+        mirror that separation here so the GUI/export can break down each axis
+        while still feeding the combined score into the Section B matrix."""
         monitor_comp = monitor_components(skeleton, monitor_bbox)
         phone_comp = phone_components(skeleton, phone_bbox, audio_devices, frame_shape)
 

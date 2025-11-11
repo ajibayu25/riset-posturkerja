@@ -87,17 +87,19 @@ class SectionCScorer:
         *,
         mouse_bbox: Optional[Tuple[int, int, int, int]] = None,
         hand_bboxes: Optional[List[Tuple[int, int, int, int]]] = None,
-        palmrest_flag: Optional[bool] = None,
-        palmrest_metrics: Optional[Dict[str, float]] = None,
     ) -> SectionCResult:
-        """Main entry to produce Section C score and breakdown."""
+        """Main entry to produce Section C score and breakdown.
+
+        The scorer intentionally keeps state minimal—mouse/keyboard sub-scores
+        are calculated independently and their query maps are merged afterward.
+        Duration adjustments happen here so the same behaviour applies whether
+        the scorer is driven from the GUI or the CLI helper.
+        """
         mouse_comp = mouse_components(
             skeleton,
             mouse_bbox,
             hand_bboxes or [],
             hand_preference,
-            palmrest_flag=palmrest_flag,
-            palmrest_metrics=palmrest_metrics or {},
         )
         keyboard_comp = keyboard_components(skeleton, hand_bboxes or [])
 

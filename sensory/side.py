@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 
 from constants.thresholds import SECTION_A_THRESHOLDS, SECTION_A_ADJUSTMENTS, SECTION_C_THRESHOLDS
@@ -458,6 +459,115 @@ def assess_work_surface_elevation(
     return metrics
 
 
+def detect_palmrest_side(
+    frame: Optional[np.ndarray],
+    skeleton: Skeleton2D,
+    hand_preference: str = "right",
+) -> Dict[str, object]:
+    """Heuristic to detect palmrest presence from the side camera.
+
+    We carve out a small ROI directly in front of the dominant wrist, convert
+    that strip to grayscale, and look for a low-texture blob roughly matching
+    the size/height of a soft palmrest.  The routine returns a lightweight
+    flag/metric dict so the calling code can attach the information to Section
+    A query breakdowns without forcing every pipeline to run OpenCV."""
+    result: Dict[str, object] = {"flag": None, "metrics": {}}
+    if frame is None:
+        return result
+    cfg = SECTION_A_THRESHOLDS.get("palmrest")
+    if not cfg:
+        return result
+
+    dominant = hand_preference.lower()
+    if dominant not in {"left", "right"}:
+        dominant = "right"
+
+    wrist = skeleton.point(f"{dominant}_wrist")
+    elbow = skeleton.point(f"{dominant}_elbow")
+    if wrist is None or elbow is None:
+        return result
+
+    wrist_arr = np.asarray(wrist, dtype=float)
+    elbow_arr = np.asarray(elbow, dtype=float)
+    forearm_vec = wrist_arr - elbow_arr
+    if np.linalg.norm(forearm_vec) < 1e-3:
+        forearm_vec = np.array([1.0, 0.0])
+    direction = forearm_vec / max(np.linalg.norm(forearm_vec), 1e-6)
+
+    shoulder_width = skeleton.shoulder_width()
+    if not np.isnan(shoulder_width) and shoulder_width > 1e-3:
+        px_per_cm = shoulder_width / cfg.get("shoulder_breadth_cm", 38.0)
+    else:
+        px_per_cm = 10.0
+
+    length_cm = cfg.get("length_cm", (4.0, 12.0))
+    height_cm = cfg.get("height_cm", (1.5, 4.0))
+    start_offset_px = float(cfg.get("start_offset_cm", 1.0)) * px_per_cm
+    length_px = float(length_cm[1] * px_per_cm)
+    height_px = float(height_cm[1] * px_per_cm)
+
+    direction_sign = 1 if direction[0] >= 0 else -1
+    x_start = wrist_arr[0] + direction_sign * start_offset_px
+    x_end = x_start + direction_sign * length_px
+    frame_h, frame_w = frame.shape[:2]
+    x1 = int(max(0, min(x_start, x_end)))
+    x2 = int(min(frame_w, max(x_start, x_end)))
+    y1 = int(max(0, wrist_arr[1] - height_px * 0.2))
+    y2 = int(min(frame_h, wrist_arr[1] + height_px))
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        result["metrics"] = {"palmrest_roi_valid": 0.0}
+        return result
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    roi = gray[y1:y2, x1:x2]
+    blur = cv2.GaussianBlur(roi, (5, 5), 0)
+    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    min_area_cm2 = float(cfg.get("min_area_cm2", 8.0))
+    max_texture_var = float(cfg.get("max_texture_var", 160.0))
+
+    best_conf = 0.0
+    best_dims = (0.0, 0.0)
+    for contour in contours:
+        if len(contour) < 6:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        if w <= 0 or h <= 0:
+            continue
+        w_cm = (w / max(px_per_cm, 1e-6))
+        h_cm = (h / max(px_per_cm, 1e-6))
+        area_cm2 = w_cm * h_cm
+        if not (length_cm[0] <= w_cm <= length_cm[1]):
+            continue
+        if not (height_cm[0] <= h_cm <= height_cm[1]):
+            continue
+        if area_cm2 < min_area_cm2:
+            continue
+        patch = roi[y : y + h, x : x + w]
+        if patch.size == 0:
+            continue
+        lap_var = cv2.Laplacian(patch, cv2.CV_64F).var()
+        if lap_var > max_texture_var:
+            continue
+        best_conf = max(best_conf, min(1.0, area_cm2 / max(min_area_cm2, 1e-6)))
+        best_dims = (w_cm, h_cm)
+
+    metrics = {
+        "palmrest_roi_width_px": float(x2 - x1),
+        "palmrest_roi_height_px": float(y2 - y1),
+        "palmrest_confidence_raw": best_conf,
+    }
+    if best_conf > 0:
+        metrics["palmrest_width_cm"] = best_dims[0]
+        metrics["palmrest_height_cm"] = best_dims[1]
+        result["flag"] = True
+    else:
+        result["flag"] = False
+    result["metrics"] = metrics
+    return result
+
+
 def _set_mouse_surface_flag(value: int) -> None:
     global _MOUSE_SURFACE_FLAG
     _MOUSE_SURFACE_FLAG = value
@@ -485,4 +595,5 @@ __all__ = [
     "assess_work_surface_elevation",
     "get_mouse_surface_flag",
     "get_work_surface_flag",
+    "detect_palmrest_side",
 ]

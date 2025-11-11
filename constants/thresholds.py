@@ -56,6 +56,14 @@ SECTION_A_THRESHOLDS = {
             "max": 0.20,
         },
     },
+    "palmrest": {
+        "length_cm": (4.0, 12.0),
+        "height_cm": (1.5, 4.0),
+        "start_offset_cm": 1.0,
+        "min_area_cm2": 8.0,
+        "max_texture_var": 160.0,
+        "shoulder_breadth_cm": 38.0,
+    },
     "armrest": {
         # Elbow flexion 90° ±10° keeps forearm neutral (CSA Z412 / ROSA Appendix A).
         "elbow_angle_deg": {
@@ -212,23 +220,6 @@ SECTION_C_THRESHOLDS = {
         # Detect pinch grip via contact area fraction (overhead detection)
         "contact_area_ratio_max": 0.35,
         "grip_contact_ratio": 0.35,
-        # Palmrest detection heuristics
-        "palmrest": {
-            "length_cm": (6.0, 12.0),
-            "width_cm": (3.0, 8.0),
-            "start_offset_cm": 0.5,
-            "min_height_cm": 3.0,
-            "max_height_cm": 6.0,
-            "min_width_cm": 8.0,
-            "max_width_cm": 20.0,
-            "min_area_cm2": 25.0,
-            "aspect_ratio_min": 1.2,
-            "aspect_ratio_max": 4.0,
-            "max_texture_var": 120.0,
-            "vote_window_frames": 45,
-            "vote_ratio": 0.6,
-            "min_valid_frames": 15,
-        },
     },
     "keyboard": {
         "wrist_extension_deg": 15.0,
@@ -249,7 +240,6 @@ SECTION_C_ADJUSTMENTS = {
         "pinch_area": 1,
         "hard_palm_rest": 1,
         "non_adjustable_platform": 1,
-        "palmrest_front": 1,
     },
     "keyboard": {
         "wrist_extension": 2,

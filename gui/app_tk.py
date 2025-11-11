@@ -11,7 +11,7 @@ import threading
 import time
 
 from dataclasses import dataclass
-from collections import deque
+from pathlib import Path
 
 import platform
 
@@ -29,7 +29,7 @@ import numpy as np
 
 import tkinter as tk
 
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, scrolledtext
 
 from PIL import Image, ImageTk
 
@@ -105,8 +105,11 @@ from scoring.sectiona import SectionAScorer
 from scoring.sectionb import SectionBScorer
 
 from scoring.sectionc import SectionCScorer
-from sensory.overhead import detect_palmrest
-from sensory.side import assess_mouse_keyboard_surfaces, assess_work_surface_elevation
+from sensory.side import (
+    assess_mouse_keyboard_surfaces,
+    assess_work_surface_elevation,
+    detect_palmrest_side,
+)
 
 
 
@@ -161,6 +164,7 @@ QUERY_DISPLAY = {
         ('hard_or_damaged_surface', 'Hard / damaged surface', 1),
         ('work_surface_too_high', 'Work Surface too High', 1),
         ('armrests_too_wide', 'Armrests too wide', 1),
+        ('palmrest_in_front_of_mouse', 'Palmrest in front of mouse', 1),
         ('mouse_keyboard_on_different_surfaces', 'Mouse/Keyboard on different surfaces', 2),
 
     ],
@@ -173,11 +177,25 @@ QUERY_DISPLAY = {
         ('mouse_in_line_with_shoulder', 'Mouse in line with shoulder', 1),
         ('reaching_to_mouse', 'Reaching to mouse', 2),
         ('pinch_grip_on_mouse', 'Pinch grip on mouse', 1),
-        ('palmrest_in_front_of_mouse', 'Palmrest in front of mouse', 1),
 
     ],
 
 }
+
+SNAPSHOT_ROOT = Path("snapshots")
+
+
+def save_snapshot(section: str, frame: np.ndarray, timestamp: float) -> None:
+    """Persist a frame to disk for later review (best-effort)."""
+    try:
+        folder = SNAPSHOT_ROOT / section
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(timestamp))
+        filename = folder / f"{stamp}.jpg"
+        cv2.imwrite(str(filename), frame)
+    except Exception:
+        # Snapshot failures shouldn't break scoring loop.
+        return
 
 
 
@@ -416,7 +434,13 @@ class BasePipeline:
 class SectionAPipeline(BasePipeline):
     """Pipeline handling side camera (Section A chair scoring)."""
 
-    def __init__(self, cam_index: int, export_mode: str = "csv", smoothing_alpha: float = 0.3) -> None:
+    def __init__(
+        self,
+        cam_index: int,
+        export_mode: str = "csv",
+        smoothing_alpha: float = 0.3,
+        draw_skeleton: bool = False,
+    ) -> None:
         super().__init__(cam_index, export_mode, smoothing_alpha)
         self.scorer = SectionAScorer()
         self.detector = ObjectDetector(model_path=DET_MODEL, device=DEVICE)
@@ -426,6 +450,7 @@ class SectionAPipeline(BasePipeline):
         self._last_mouse_bbox: Optional[BBox] = None
         self._last_desk_info: Optional[Tuple[BBox, float]] = None
         self._last_chair_info: Optional[Tuple[BBox, float]] = None
+        self._draw_skeleton = draw_skeleton
         # Run heavy desk/chair detection sparingly to keep UI responsive.
         self._desk_detection_stride = 15
         self._frame_counter = 0
@@ -437,6 +462,7 @@ class SectionAPipeline(BasePipeline):
         prev_queries = previous.get("queries", {})
         prev_metrics = previous.get("metrics", {})
 
+        # Only run YOLO desk/chair detection occasionally to keep FPS stable.
         self._frame_counter += 1
         run_detection = (
             evaluate
@@ -470,8 +496,14 @@ class SectionAPipeline(BasePipeline):
             display = put_text_lines(display, ["No pose detected"], color=(0, 0, 255))
             return PipelineResult(display, summary)
 
-        display = draw_skeleton(display, keypoints)
+        if self._draw_skeleton:
+            display = draw_skeleton(display, keypoints)
         skeleton = Skeleton2D.from_array(keypoints)
+
+        # Heuristic palmrest detection uses the same side feed; returns coarse metrics.
+        palm_detection = detect_palmrest_side(frame, skeleton, SECTIONC_HAND)
+        palmrest_flag = palm_detection.get("flag")
+        palmrest_metrics = palm_detection.get("metrics", {})
 
         surface_metrics = assess_mouse_keyboard_surfaces(skeleton, SECTIONC_HAND)
         work_metrics = assess_work_surface_elevation(skeleton, SECTIONC_HAND)
@@ -480,12 +512,15 @@ class SectionAPipeline(BasePipeline):
         if evaluate:
             total_seconds = timestamp - self.session_start
             continuous_seconds = timestamp - self.continuous_start
+            save_snapshot("A", frame, timestamp)
             result = self.scorer.score(
                 skeleton,
                 total_seconds,
                 continuous_seconds,
                 desk_info=self._last_desk_info,
                 chair_info=self._last_chair_info,
+                palmrest_flag=palmrest_flag,
+                palmrest_metrics=palmrest_metrics,
             )
             self._last_result = result
             self._last_updated_ts = result.timestamp
@@ -528,11 +563,17 @@ class SectionAPipeline(BasePipeline):
         queries = summary.get("queries", {})
         queries["mouse_keyboard_on_different_surfaces"] = int(surface_metrics.get("mouse_keyboard_surface_flag", 0))
         queries["work_surface_too_high"] = int(work_metrics.get("work_surface_flag", 0))
+        if palmrest_flag is True:
+            queries["palmrest_in_front_of_mouse"] = 1
+        elif palmrest_flag is False:
+            queries.setdefault("palmrest_in_front_of_mouse", 0)
         summary["queries"] = queries
 
         metrics = summary.get("metrics", {})
         metrics.update(surface_metrics)
         metrics.update(work_metrics)
+        if palmrest_metrics:
+            metrics.update({f"palmrest_{k}": float(v) for k, v in palmrest_metrics.items()})
         summary["metrics"] = metrics
 
         self._last_summary = summary
@@ -612,6 +653,8 @@ class SectionBPipeline(BasePipeline):
 
         }
 
+        # Only invoke the detector when necessary to keep throughput high.
+        # Throttle YOLO inference so the front camera remains responsive.
         self.frame_count += 1
 
         run_detection = (
@@ -672,6 +715,9 @@ class SectionBPipeline(BasePipeline):
             total_seconds = timestamp - self.session_start
 
             continuous_seconds = timestamp - self.continuous_start
+
+            # Store a still for auditing / dataset building.
+            save_snapshot("B", frame, timestamp)
 
             result = self.scorer.score(
 
@@ -789,6 +835,7 @@ class SectionCPipeline(BasePipeline):
 
         hand_preference: str = "right",
         detection_stride: int = 12,
+        draw_skeleton: bool = False,
 
     ) -> None:
 
@@ -816,15 +863,7 @@ class SectionCPipeline(BasePipeline):
 
         self.detection_stride = max(1, detection_stride)
         self._frame_index = 0
-
-        palm_cfg = SECTION_C_THRESHOLDS["mouse"].get("palmrest", {})
-        window = int(palm_cfg.get("vote_window_frames", 45) or 45)
-        self._palmrest_votes: deque[int] = deque(maxlen=max(1, window))
-        self._palmrest_confidence: float = 0.0
-        self._palmrest_bbox: Optional[BBox] = None
-        self._palmrest_corridor: Optional[np.ndarray] = None
-        self._palmrest_vote_ratio: float = float("nan")
-        self._palmrest_last_flag: Optional[bool] = None
+        self._draw_skeleton = draw_skeleton
 
 
 
@@ -855,8 +894,9 @@ class SectionCPipeline(BasePipeline):
             "just_updated": False,
 
         }
-        metrics_dict: Dict[str, float] = summary.setdefault("metrics", {})
 
+        # Spread out YOLO inference so the overhead stream stays responsive.
+        # Keep a lightweight detection cadence on the overhead feed as well.
         self._frame_index += 1
         run_detection = (
             evaluate
@@ -877,59 +917,10 @@ class SectionCPipeline(BasePipeline):
 
 
 
-        display = draw_skeleton(display, keypoints, color=(0, 255, 120))
+        if self._draw_skeleton:
+            display = draw_skeleton(display, keypoints, color=(0, 255, 120))
 
         skeleton = Skeleton2D.from_array(keypoints)
-
-        palm_detection = detect_palmrest(
-            frame,
-            skeleton,
-            self._last_hand_bboxes,
-            self.hand_preference,
-            self._last_mouse_bbox,
-        )
-        palm_metrics_raw = palm_detection.get("metrics", {}) or {}
-        corridor = palm_detection.get("corridor")
-        self._palmrest_corridor = (
-            np.asarray(corridor, dtype=int) if corridor is not None else None
-        )
-        bbox = palm_detection.get("bbox")
-        self._palmrest_bbox = tuple(map(int, bbox)) if bbox is not None else None
-        self._palmrest_confidence = float(palm_detection.get("confidence", 0.0))
-        if palm_detection.get("valid"):
-            flag_raw = bool(palm_detection.get("flag"))
-            self._palmrest_votes.append(1 if flag_raw else 0)
-            metrics_dict["palmrest_raw_flag"] = 1.0 if flag_raw else 0.0
-        else:
-            metrics_dict["palmrest_raw_flag"] = float("nan")
-        for key, value in palm_metrics_raw.items():
-            metrics_dict[f"palmrest_raw_{key}"] = float(value)
-        palm_cfg = SECTION_C_THRESHOLDS["mouse"].get("palmrest", {})
-        if self._palmrest_votes:
-            self._palmrest_vote_ratio = sum(self._palmrest_votes) / len(self._palmrest_votes)
-        else:
-            self._palmrest_vote_ratio = float("nan")
-        metrics_dict["palmrest_vote_ratio"] = self._palmrest_vote_ratio
-        metrics_dict["palmrest_samples"] = float(len(self._palmrest_votes))
-        metrics_dict["palmrest_confidence"] = self._palmrest_confidence
-        min_frames = int(palm_cfg.get("min_valid_frames", 15) or 15)
-        vote_ratio = float(palm_cfg.get("vote_ratio", 0.6))
-        if len(self._palmrest_votes) >= min_frames and not np.isnan(self._palmrest_vote_ratio):
-            if self._palmrest_vote_ratio >= vote_ratio:
-                palmrest_flag_smoothed: Optional[bool] = True
-            elif self._palmrest_vote_ratio <= (1.0 - vote_ratio):
-                palmrest_flag_smoothed = False
-            else:
-                palmrest_flag_smoothed = None
-        else:
-            palmrest_flag_smoothed = None
-        self._palmrest_last_flag = palmrest_flag_smoothed
-        summary["palmrest_status"] = palmrest_flag_smoothed
-        palmrest_metrics_for_score = {
-            "vote_ratio": self._palmrest_vote_ratio,
-            "confidence": self._palmrest_confidence,
-            "samples": float(len(self._palmrest_votes)),
-        }
 
         surface_metrics = assess_mouse_keyboard_surfaces(skeleton, SECTIONC_HAND)
 
@@ -939,7 +930,9 @@ class SectionCPipeline(BasePipeline):
 
         queries_dict["mouse_keyboard_on_different_surfaces"] = surface_flag
 
-        metrics_dict.update(surface_metrics)
+        metrics = summary.get("metrics", {})
+        metrics.update(surface_metrics)
+        summary["metrics"] = metrics
 
         just_updated = False
 
@@ -948,6 +941,9 @@ class SectionCPipeline(BasePipeline):
             total_seconds = timestamp - self.session_start
 
             continuous_seconds = timestamp - self.continuous_start
+
+            # Save reference frame for post-hoc review (overhead top view).
+            save_snapshot("C", frame, timestamp)
 
             result = self.scorer.score(
 
@@ -962,10 +958,6 @@ class SectionCPipeline(BasePipeline):
                 mouse_bbox=self._last_mouse_bbox,
 
                 hand_bboxes=self._last_hand_bboxes,
-
-                palmrest_flag=palmrest_flag_smoothed,
-
-                palmrest_metrics=palmrest_metrics_for_score,
 
             )
 
@@ -987,12 +979,6 @@ class SectionCPipeline(BasePipeline):
         for hand_bbox in self._last_hand_bboxes:
             hx1, hy1, hx2, hy2 = map(int, hand_bbox)
             cv2.rectangle(display, (hx1, hy1), (hx2, hy2), (40, 200, 120), 2)
-
-        if self._palmrest_corridor is not None:
-            cv2.polylines(display, [np.asarray(self._palmrest_corridor, dtype=int)], True, (200, 200, 120), 1)
-        if self._palmrest_bbox is not None:
-            px, py, pw, ph = self._palmrest_bbox
-            cv2.rectangle(display, (px, py), (px + pw, py + ph), (255, 210, 70), 2)
 
         if result is not None:
 
@@ -1364,7 +1350,7 @@ class MultiSectionTkApp:
 
         self.toggle_buttons: Dict[str, ttk.Button] = {}
 
-        self.indicator_text_vars: Dict[str, tk.StringVar] = {}
+        self.indicator_widgets: Dict[str, scrolledtext.ScrolledText] = {}
 
         self.pipelines: Dict[str, BasePipeline] = {}
 
@@ -1678,27 +1664,17 @@ class MultiSectionTkApp:
 
 
 
-            indicator_var = tk.StringVar(value=self._format_indicator_block(section, None))
-
-            indicator_label = ttk.Label(
-
+            indicator_text = self._format_indicator_block(section, None)
+            indicator_widget = scrolledtext.ScrolledText(
                 frame,
-
-                textvariable=indicator_var,
-
-                anchor="w",
-
-                justify="left",
-
-                wraplength=320,
-
+                height=12,
+                wrap="word",
                 font=("Segoe UI", 9),
-
             )
-
-            indicator_label.pack(fill="x", padx=4, pady=(2, 4))
-
-            self.indicator_text_vars[section] = indicator_var
+            indicator_widget.pack(fill="both", expand=True, padx=4, pady=(2, 4))
+            indicator_widget.configure(state="disabled")
+            self.indicator_widgets[section] = indicator_widget
+            self._set_indicator_text(section, indicator_text)
 
 
 
@@ -1771,6 +1747,16 @@ class MultiSectionTkApp:
                 lines.append(f"{marker} score={value} - {label}")
 
         return "\n".join(lines)
+
+    def _set_indicator_text(self, section: str, text: str) -> None:
+        """Update the multiline indicator widget with scroll support."""
+        widget = self.indicator_widgets.get(section)
+        if widget is None:
+            return
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.configure(state="disabled")
 
 
 
@@ -1880,7 +1866,7 @@ class MultiSectionTkApp:
 
         self.score_vars[section].set(f"{friendly} indicators total: initializing...")
 
-        self.indicator_text_vars[section].set(self._format_indicator_block(section, None))
+        self._set_indicator_text(section, self._format_indicator_block(section, None))
 
         self.video_labels[section].configure(image=self.placeholder_photo, text="Connecting...", compound="center")
 
@@ -1908,7 +1894,7 @@ class MultiSectionTkApp:
 
         self.score_vars[section].set(f"{friendly} indicators total: -")
 
-        self.indicator_text_vars[section].set(self._format_indicator_block(section, None))
+        self._set_indicator_text(section, self._format_indicator_block(section, None))
 
         self.photo_refs[section] = self.placeholder_photo
 
@@ -2100,7 +2086,7 @@ class MultiSectionTkApp:
 
             self.score_vars[section].set(text)
 
-            self.indicator_text_vars[section].set(self._format_indicator_block(section, result.summary))
+            self._set_indicator_text(section, self._format_indicator_block(section, result.summary))
 
             if result.summary.get("just_updated"):
 

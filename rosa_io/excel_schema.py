@@ -64,7 +64,7 @@ _QUERY_HEADER_MAP: Dict[str, Tuple[str, str]] = {
     "Reaching to mouse": ("overhead", "reaching_to_mouse"),
     "Mouse/Keyboard on different surfaces": ("overhead", "mouse_keyboard_on_different_surfaces"),
     "Pinch grip on mouse": ("overhead", "pinch_grip_on_mouse"),
-    "Palmrest in front of mouse": ("overhead", "palmrest_in_front_of_mouse"),
+    "Palmrest in front of mouse": ("side", "palmrest_in_front_of_mouse"),
     "Keyboard too high – shoulders shrugged": ("front", "keyboard_too_high_shoulders_shrugged"),
     "Knees at 90°": ("side", "knees_at_90_deg"),
     "Too Low – Knee Angle < 90°": ("side", "too_low_knee_angle_less_than_90_deg"),
@@ -91,7 +91,13 @@ def build_excel_row(
     monitor_peripherals: MonitorPeripheralResult,
     rosa_total: ROSATotalResult,
 ) -> Dict[str, object]:
-    """Build a single Excel row with friendly headers and query values."""
+    """Build a single Excel row with friendly headers and query values.
+
+    We flatten all query dictionaries into a single dict keyed by the human
+    readable column names defined above.  Missing queries are exported as the
+    string "null" so downstream tools can distinguish between "flag exists but
+    equals 0" and "flag was never produced for that frame".
+    """
     row: Dict[str, object] = {}
     sources = {
         "front": section_b.query_breakdown,

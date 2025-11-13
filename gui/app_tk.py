@@ -10,6 +10,7 @@ import threading
 
 import time
 
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +30,7 @@ import numpy as np
 
 import tkinter as tk
 
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox
 
 from PIL import Image, ImageTk
 
@@ -196,6 +197,63 @@ def save_snapshot(section: str, frame: np.ndarray, timestamp: float) -> None:
     except Exception:
         # Snapshot failures shouldn't break scoring loop.
         return
+
+
+class IndicatorPanel(ttk.Frame):
+    """Scrollable collection of colored indicator rows."""
+
+    def __init__(self, master: tk.Widget, width: int = 360, **kwargs: Any) -> None:
+        super().__init__(master, **kwargs)
+        self.canvas = tk.Canvas(self, highlightthickness=0, width=width)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas)
+        self.inner.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        self.rows: List[ttk.Frame] = []
+
+    def set_rows(self, rows: List[Tuple[str, str, str]]) -> None:
+        """Replace current rows with colored status badges + labels."""
+        for row in self.rows:
+            row.destroy()
+        self.rows.clear()
+
+        color_map = {
+            "ok": ("#1f6f43", "#d6f5dd"),
+            "alert": ("#cc2936", "#ffd6d6"),
+            "unknown": ("#444444", "#e1e1e1"),
+        }
+        for status_text, description, tag in rows:
+            fg, bg = color_map.get(tag, ("#444444", "#e1e1e1"))
+            row_frame = ttk.Frame(self.inner, padding=(0, 3))
+            status_lbl = tk.Label(
+                row_frame,
+                text=status_text,
+                bg=bg,
+                fg=fg,
+                width=9,
+                font=("Segoe UI", 9, "bold"),
+                anchor="center",
+                padx=6,
+                pady=2,
+            )
+            text_lbl = ttk.Label(
+                row_frame,
+                text=description,
+                font=("Segoe UI", 9),
+                justify="left",
+                padding=(8, 0),
+                wraplength=280,
+            )
+            status_lbl.pack(side="left")
+            text_lbl.pack(side="left", fill="x", expand=True)
+            row_frame.pack(fill="x", anchor="w")
+            self.rows.append(row_frame)
 
 
 
@@ -1350,7 +1408,9 @@ class MultiSectionTkApp:
 
         self.toggle_buttons: Dict[str, ttk.Button] = {}
 
-        self.indicator_widgets: Dict[str, scrolledtext.ScrolledText] = {}
+        self.indicator_panels: Dict[str, IndicatorPanel] = {}
+        self.last_update_vars: Dict[str, tk.StringVar] = {}
+        self.next_capture_vars: Dict[str, tk.StringVar] = {}
 
         self.pipelines: Dict[str, BasePipeline] = {}
 
@@ -1664,17 +1724,17 @@ class MultiSectionTkApp:
 
 
 
-            indicator_text = self._format_indicator_block(section, None)
-            indicator_widget = scrolledtext.ScrolledText(
-                frame,
-                height=12,
-                wrap="word",
-                font=("Segoe UI", 9),
-            )
-            indicator_widget.pack(fill="both", expand=True, padx=4, pady=(2, 4))
-            indicator_widget.configure(state="disabled")
-            self.indicator_widgets[section] = indicator_widget
-            self._set_indicator_text(section, indicator_text)
+            last_var = tk.StringVar(value="Last update: -")
+            next_var = tk.StringVar(value="Next capture: -")
+            ttk.Label(frame, textvariable=last_var, font=("Segoe UI", 8, "italic")).pack(anchor="w", padx=4)
+            ttk.Label(frame, textvariable=next_var, font=("Segoe UI", 8, "italic")).pack(anchor="w", padx=4, pady=(0, 4))
+            self.last_update_vars[section] = last_var
+            self.next_capture_vars[section] = next_var
+
+            panel = IndicatorPanel(frame)
+            panel.pack(fill="both", expand=True, padx=4, pady=(2, 4))
+            self.indicator_panels[section] = panel
+            panel.set_rows(self._build_indicator_rows(section, None))
 
 
 
@@ -1686,77 +1746,70 @@ class MultiSectionTkApp:
 
 
 
-    def _format_indicator_block(self, section: str, summary: Optional[Dict[str, Any]]) -> str:
-
-        """Build multiline string describing latest query values for a section."""
-
+    def _build_indicator_rows(self, section: str, summary: Optional[Dict[str, Any]]) -> List[Tuple[str, str, str]]:
+        """Convert query scores into badge rows for the indicator panel."""
         spec = self.section_specs[section]
-
-        lines: List[str] = []
-
-        updated_at = None
-
-        next_in = None
-
-        if summary:
-
-            updated_at = summary.get("updated_at")
-
-            next_in = summary.get("next_update_in")
-
-        if updated_at:
-
-            lines.append(f"Last update: {time.strftime('%H:%M:%S', time.localtime(updated_at))}")
-
-        else:
-
-            lines.append("Last update: -")
-
-        if isinstance(next_in, (int, float)):
-
-            lines.append(f"Next capture: {max(0, int(round(next_in)))}s")
-
-        else:
-
-            lines.append("Next capture: -")
-
-        lines.append("")
-
+        rows: List[Tuple[str, str, str]] = []
         query_scores: Dict[str, int] = {}
+        data_ready = False
+        updated_at: Optional[float] = None
+        next_in: Optional[float] = None
 
         if summary:
-
             queries = summary.get("queries")
-
             if isinstance(queries, dict):
-
                 query_scores = {str(k): int(v) for k, v in queries.items()}
+            updated_at = summary.get("updated_at")
+            next_in = summary.get("next_update_in")
+            if isinstance(updated_at, (int, float)) and updated_at > 0:
+                data_ready = True
+            elif any(query_scores.values()):
+                data_ready = True
 
-        for key, label, weight in QUERY_DISPLAY.get(spec["query_key"], []):
+        row_specs = QUERY_DISPLAY.get(spec["query_key"], [])
+        if not row_specs:
+            return [("0 of 0", "No indicators configured", "unknown")]
 
+        for key, label, weight in row_specs:
             value = int(query_scores.get(key, 0))
-
-            marker = "[x]" if value > 0 else "[ ]"
-
-            if weight is not None:
-
-                lines.append(f"{marker} score={value} of {weight} - {label}")
-
+            if weight is None:
+                status_text = "info"
             else:
+                status_text = f"{value} of {weight}"
+            tag = self._indicator_tag_for_values(value, weight, data_ready)
+            rows.append((status_text, label, tag))
 
-                lines.append(f"{marker} score={value} - {label}")
+        # Update timestamp labels alongside the badge rows.
+        last_var = self.last_update_vars.get(section)
+        next_var = self.next_capture_vars.get(section)
+        if last_var is not None:
+            if isinstance(updated_at, (int, float)) and updated_at > 0:
+                last_var.set(f"Last update: {time.strftime('%H:%M:%S', time.localtime(updated_at))}")
+            else:
+                last_var.set("Last update: -")
+        if next_var is not None:
+            if isinstance(next_in, (int, float)):
+                next_var.set(f"Next capture: {max(0, int(round(next_in)))}s")
+            else:
+                next_var.set("Next capture: -")
 
-        return "\n".join(lines)
+        return rows
 
-    def _set_indicator_text(self, section: str, text: str) -> None:
-        """Update the multiline indicator widget with scroll support."""
-        widget = self.indicator_widgets.get(section)
-        if widget is None:
+    def _update_indicator_panel(self, section: str, summary: Optional[Dict[str, Any]]) -> None:
+        """Refresh a section's indicator panel with the latest badge colors."""
+        panel = self.indicator_panels.get(section)
+        if panel is None:
             return
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
-        widget.insert("1.0", text)
-        widget.configure(state="disabled")
+        panel.set_rows(self._build_indicator_rows(section, summary))
+
+    @staticmethod
+    def _indicator_tag_for_values(value: int, weight: Optional[int], data_ready: bool) -> str:
+        """Return badge color tag (ok/alert/unknown) for an indicator row."""
+        if not data_ready:
+            return "unknown"
+        if weight is None or weight <= 0:
+            return "unknown"
+        return "alert" if value > 0 else "ok"
 
 
 
@@ -1866,7 +1919,7 @@ class MultiSectionTkApp:
 
         self.score_vars[section].set(f"{friendly} indicators total: initializing...")
 
-        self._set_indicator_text(section, self._format_indicator_block(section, None))
+        self._update_indicator_panel(section, None)
 
         self.video_labels[section].configure(image=self.placeholder_photo, text="Connecting...", compound="center")
 
@@ -1894,7 +1947,7 @@ class MultiSectionTkApp:
 
         self.score_vars[section].set(f"{friendly} indicators total: -")
 
-        self._set_indicator_text(section, self._format_indicator_block(section, None))
+        self._update_indicator_panel(section, None)
 
         self.photo_refs[section] = self.placeholder_photo
 
@@ -2086,7 +2139,7 @@ class MultiSectionTkApp:
 
             self.score_vars[section].set(text)
 
-            self._set_indicator_text(section, self._format_indicator_block(section, result.summary))
+            self._update_indicator_panel(section, result.summary)
 
             if result.summary.get("just_updated"):
 

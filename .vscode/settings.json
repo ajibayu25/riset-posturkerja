@@ -1,4 +1,5 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:venv",
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "C_Cpp.default.compilerPath": "c:\\Users\\ajiam\\AppData\\Local\\Programs\\Arduino IDE\\Arduino IDE.exe"
 }

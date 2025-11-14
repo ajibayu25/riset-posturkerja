@@ -6,6 +6,8 @@ from __future__ import annotations
 
 
 
+import copy
+
 import threading
 
 import time
@@ -30,11 +32,15 @@ import numpy as np
 
 import tkinter as tk
 
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 
 from PIL import Image, ImageTk
 
 
+
+# Path constants for image assets
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+HARD_SURFACE_IMAGE = ASSETS_DIR / "hard_surface.png"
 
 from config import (
     CAMERA_DEFAULTS,
@@ -47,6 +53,8 @@ from config import (
     EXPORT_CSV,
     EXPORT_JSONL,
     EXPORT_XLSX,
+    GLARE_SERIAL_PORT,
+    GLARE_BAUDRATE,
     POSE_MODEL,
     SECTIONC_HAND,
 )
@@ -101,16 +109,17 @@ from scoring.monitor_peripherals import MonitorPeripheralScorer
 
 from scoring.rosa_total import ROSATotalScorer
 
-from scoring.sectiona import SectionAScorer
+from scoring.sectiona import SectionAScorer, SectionAResult
 
-from scoring.sectionb import SectionBScorer
+from scoring.sectionb import SectionBScorer, SectionBResult
 
-from scoring.sectionc import SectionCScorer
+from scoring.sectionc import SectionCScorer, SectionCResult
 from sensory.side import (
     assess_mouse_keyboard_surfaces,
     assess_work_surface_elevation,
     detect_palmrest_side,
 )
+from sensory.glare_serial import GlareSerialClient
 
 
 
@@ -129,7 +138,7 @@ QUERY_DISPLAY = {
         ('too_far_of_reach_outside_30_cm', 'Too Far of Reach (outside of 30 cm)', 2),
 
         ('neck_and_shoulder_hold', 'Neck and Shoulder Hold', 2),
-
+        ('neck_twist_greater_than_30_deg', 'Neck twist greater than 30 deg', 1),
         ('no_hands_free_options', 'No Hands-Free Options', 1),
 
         ('keyboard_too_high_shoulders_shrugged', 'Keyboard too high - shoulders shrugged', 1),
@@ -138,7 +147,7 @@ QUERY_DISPLAY = {
 
     'side': [
 
-        ('knees_at_90_deg', 'Knees at 90 deg', 1),
+        ('knees_at_90_deg', 'Knees at 90 degree', 1),
 
         ('too_low_knee_angle_less_than_90_deg', 'Too Low - Knee Angle < 90 deg', 2),
 
@@ -172,12 +181,11 @@ QUERY_DISPLAY = {
 
     'overhead': [
 
-        ('neck_twist_greater_than_30_deg', 'Neck twist greater than 30 deg', 1),
-
         ('deviation_while_typing', 'Deviation while typing', 1),
         ('mouse_in_line_with_shoulder', 'Mouse in line with shoulder', 1),
         ('reaching_to_mouse', 'Reaching to mouse', 2),
         ('pinch_grip_on_mouse', 'Pinch grip on mouse', 1),
+        ('documents_used_no_document_holder', 'Documents used - no document holder', 1),
 
     ],
 
@@ -204,18 +212,23 @@ class IndicatorPanel(ttk.Frame):
 
     def __init__(self, master: tk.Widget, width: int = 360, **kwargs: Any) -> None:
         super().__init__(master, **kwargs)
-        self.canvas = tk.Canvas(self, highlightthickness=0, width=width)
+        self._preferred_width = width
+        self.canvas = tk.Canvas(self, highlightthickness=0, width=width, bg="#f7f7f7")
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.inner = ttk.Frame(self.canvas)
+        self.inner = tk.Frame(self.canvas, bg="#f7f7f7")
         self.inner.bind(
             "<Configure>",
             lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
         )
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: setattr(self, "_preferred_width", max(e.width, 240)),
+        )
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
-        self.rows: List[ttk.Frame] = []
+        self.rows: List[tk.Widget] = []
 
     def set_rows(self, rows: List[Tuple[str, str, str]]) -> None:
         """Replace current rows with colored status badges + labels."""
@@ -224,36 +237,127 @@ class IndicatorPanel(ttk.Frame):
         self.rows.clear()
 
         color_map = {
-            "ok": ("#1f6f43", "#d6f5dd"),
-            "alert": ("#cc2936", "#ffd6d6"),
-            "unknown": ("#444444", "#e1e1e1"),
+            "ok": {
+                "badge_bg": "#0fb268",
+                "badge_fg": "#ffffff",
+                "row_bg": "#ffffff",
+                "border": "#c5eeda",
+            },
+            "alert": {
+                "badge_bg": "#f2453d",
+                "badge_fg": "#ffffff",
+                "row_bg": "#ffffff",
+                "border": "#f8caca",
+            },
+            "unknown": {
+                "badge_bg": "#a7a7a7",
+                "badge_fg": "#ffffff",
+                "row_bg": "#f6f6f6",
+                "border": "#dcdcdc",
+            },
         }
         for status_text, description, tag in rows:
-            fg, bg = color_map.get(tag, ("#444444", "#e1e1e1"))
-            row_frame = ttk.Frame(self.inner, padding=(0, 3))
-            status_lbl = tk.Label(
-                row_frame,
+            colors = color_map.get(tag, color_map["unknown"])
+            row_canvas = tk.Canvas(
+                self.inner,
+                bg=colors["row_bg"],
+                highlightthickness=0,
+                height=44,
+                width=max(self._preferred_width - 12, 240),
+            )
+            row_canvas.pack(fill="x", padx=6, pady=3)
+            row_canvas.update_idletasks()
+            width = max(row_canvas.winfo_width(), self._preferred_width - 12, 240)
+            row_canvas.config(width=width)
+            row_canvas.create_rectangle(
+                0,
+                0,
+                width,
+                44,
+                outline=colors["border"],
+                width=1,
+                fill=colors["row_bg"],
+            )
+            badge_width = 86
+            row_canvas.create_rectangle(
+                12,
+                10,
+                12 + badge_width,
+                34,
+                outline="",
+                fill=colors["badge_bg"],
+            )
+            row_canvas.create_text(
+                12 + badge_width / 2,
+                22,
                 text=status_text,
-                bg=bg,
-                fg=fg,
-                width=9,
-                font=("Segoe UI", 9, "bold"),
-                anchor="center",
-                padx=6,
-                pady=2,
+                fill=colors["badge_fg"],
+                font=("Segoe UI", 10, "bold"),
             )
-            text_lbl = ttk.Label(
-                row_frame,
+            row_canvas.create_text(
+                12 + badge_width + 14,
+                22,
                 text=description,
-                font=("Segoe UI", 9),
-                justify="left",
-                padding=(8, 0),
-                wraplength=280,
+                fill="#0f0f0f",
+                anchor="w",
+                font=("Segoe UI", 10),
+                width=width - (12 + badge_width + 20),
             )
-            status_lbl.pack(side="left")
-            text_lbl.pack(side="left", fill="x", expand=True)
-            row_frame.pack(fill="x", anchor="w")
-            self.rows.append(row_frame)
+            self.rows.append(row_canvas)
+
+
+class ArmrestSurfaceDialog(simpledialog.Dialog):
+    """Modal dialog presenting armrest surface conditions for hard-surface query."""
+
+    OPTIONS = [
+        ("Empuk (berpadding / ada bantalan)", "empuk"),
+        ("Licin (tidak ada tekstur / terasa keras)", "licin"),
+        ("Keras / rusak (langsung kayu, plastik, metal)", "keras"),
+    ]
+
+    def __init__(
+        self,
+        master: tk.Widget,
+        default: Optional[str] = None,
+        image_path: Optional[Path] = None,
+    ) -> None:
+        self._selection = tk.StringVar()
+        normalized = (default or "").strip().lower()
+        if normalized in {"empuk", "licin", "keras"}:
+            self._selection.set(normalized)
+        else:
+            self._selection.set("empuk")
+        self._image_path = image_path
+        self._photo: Optional[ImageTk.PhotoImage] = None
+        super().__init__(master, title="Kondisi permukaan armrest")
+
+    def body(self, master: tk.Widget) -> None:
+        if self._image_path and self._image_path.exists():
+            try:
+                image = Image.open(self._image_path)
+                image.thumbnail((360, 200), Image.LANCZOS)
+                self._photo = ImageTk.PhotoImage(image)
+                ttk.Label(master, image=self._photo).pack(anchor="center", pady=(0, 4))
+            except Exception:
+                pass
+
+        ttk.Label(
+            master,
+            text="Pilih kondisi permukaan sandaran tangan (armrest) sesuai pengamatan:",
+            padding=(0, 4),
+            wraplength=360,
+            justify="left",
+        ).pack(anchor="w")
+        for label, value in self.OPTIONS:
+            ttk.Radiobutton(
+                master,
+                text=label,
+                value=value,
+                variable=self._selection,
+            ).pack(anchor="w", padx=4, pady=2)
+
+    def apply(self) -> None:
+        self.result = self._selection.get()
 
 
 
@@ -497,7 +601,7 @@ class SectionAPipeline(BasePipeline):
         cam_index: int,
         export_mode: str = "csv",
         smoothing_alpha: float = 0.3,
-        draw_skeleton: bool = False,
+        draw_skeleton: bool = True,
     ) -> None:
         super().__init__(cam_index, export_mode, smoothing_alpha)
         self.scorer = SectionAScorer()
@@ -509,6 +613,7 @@ class SectionAPipeline(BasePipeline):
         self._last_desk_info: Optional[Tuple[BBox, float]] = None
         self._last_chair_info: Optional[Tuple[BBox, float]] = None
         self._draw_skeleton = draw_skeleton
+        self._floor_line_y: Optional[float] = None
         # Run heavy desk/chair detection sparingly to keep UI responsive.
         self._desk_detection_stride = 15
         self._frame_counter = 0
@@ -532,6 +637,7 @@ class SectionAPipeline(BasePipeline):
             detections = self.detector.predict(frame)
             self._last_desk_info = ObjectDetector.pick_table_candidate(detections)
             self._last_chair_info = ObjectDetector.pick_chair_candidate(detections)
+            self._update_floor_line(frame.shape[0])
 
         if self._last_desk_info is not None:
             (dx1, dy1, dx2, dy2), _conf = self._last_desk_info
@@ -595,6 +701,22 @@ class SectionAPipeline(BasePipeline):
             ]
             risk = "OK" if result_obj.chair_score_final < 5 else "High"
             lines.append(f"Risk: {risk}")
+            metrics = result_obj.seat_height.metrics
+            floor_y = None
+            if isinstance(metrics, dict):
+                val = metrics.get("estimated_floor_y")
+                if val is not None:
+                    floor_y = float(val)
+                contact_flag = int(metrics.get("foot_contact_flag", 1))
+            if floor_y is None:
+                floor_y = self._floor_line_y
+            floor_y = float(floor_y) if floor_y is not None else float("nan")
+            if not np.isnan(floor_y):
+                floor_y_int = int(floor_y)
+                no_foot_flag = int(result_obj.query_breakdown.get("no_foot_contact_on_ground", 0))
+                floor_color = (0, 210, 0) if no_foot_flag == 0 else (20, 40, 220)
+                cv2.line(display, (0, floor_y_int), (display.shape[1], floor_y_int), floor_color, 2)
+                lines.append(f"Floor ref y={floor_y_int} ({'contact' if no_foot_flag == 0 else 'no contact'})")
             display = put_text_lines(display, lines)
             summary = {
                 "score": result_obj.chair_score_final,
@@ -632,10 +754,82 @@ class SectionAPipeline(BasePipeline):
         metrics.update(work_metrics)
         if palmrest_metrics:
             metrics.update({f"palmrest_{k}": float(v) for k, v in palmrest_metrics.items()})
+        if self._floor_line_y is not None:
+            metrics["floor_line_y"] = float(self._floor_line_y)
         summary["metrics"] = metrics
 
+        self._maybe_calibrate_floor_line(skeleton, result_obj)
+        self._apply_floor_contact_override(skeleton, summary)
         self._last_summary = summary
         return PipelineResult(display, summary)
+
+    def _update_floor_line(self, frame_height: int) -> None:
+        baseline = frame_height - 8
+        if self._last_chair_info is not None:
+            (cx1, cy1, cx2, cy2), _ = self._last_chair_info
+            baseline = min(frame_height - 4, cy2 + 4)
+        if self._floor_line_y is None:
+            self._floor_line_y = float(baseline)
+        else:
+            self._floor_line_y = 0.8 * self._floor_line_y + 0.2 * float(baseline)
+
+    def _apply_floor_contact_override(self, skeleton: Skeleton2D, summary: Dict[str, Any]) -> None:
+        if self._floor_line_y is None:
+            return
+        cfg = SECTION_A_THRESHOLDS["seat_height"]
+        tol_ratio = cfg.get("floor_line_tolerance_ratio", 0.08)
+        tol_px = cfg.get("floor_line_tolerance_px", 12.0)
+        contacts: List[bool] = []
+        for side in ("left", "right"):
+            ankle = skeleton.point(f"{side}_ankle")
+            if ankle is None:
+                continue
+            hip = skeleton.point(f"{side}_hip")
+            knee = skeleton.point(f"{side}_knee")
+            leg_len = float("nan")
+            if hip is not None:
+                leg_len = float(distance(hip, ankle))
+            elif knee is not None:
+                leg_len = float(distance(knee, ankle))
+            tol = max(tol_px, (leg_len if not np.isnan(leg_len) else 0.0) * tol_ratio)
+            gap = float(self._floor_line_y) - float(ankle[1])
+            contacts.append(gap <= tol)
+        if not contacts:
+            return
+        foot_contact = any(contacts)
+        value = 0 if foot_contact else 2
+        summary.setdefault("queries", {})["no_foot_contact_on_ground"] = value
+        metrics = summary.setdefault("metrics", {})
+        metrics["floordet_contacts"] = int(foot_contact)
+        metrics["floor_line_y"] = float(self._floor_line_y)
+        result = summary.get("section_result")
+        if result is not None and hasattr(result, "query_breakdown"):
+            result.query_breakdown["no_foot_contact_on_ground"] = value
+            seat_metrics = getattr(result.seat_height, "metrics", None)
+            if isinstance(seat_metrics, dict):
+                seat_metrics["estimated_floor_y"] = float(self._floor_line_y)
+
+    def _maybe_calibrate_floor_line(self, skeleton: Skeleton2D, section_result: Optional[SectionAResult]) -> None:
+        if self._floor_line_y is None or skeleton is None or section_result is None:
+            return
+        metrics = getattr(section_result.seat_height, "metrics", None)
+        if not isinstance(metrics, dict):
+            return
+        contact_flag = metrics.get("foot_contact_flag")
+        if contact_flag is None:
+            return
+        try:
+            contact_flag = int(contact_flag)
+        except (TypeError, ValueError):
+            return
+        if contact_flag <= 0:
+            return
+        ankle_points = [skeleton.point("left_ankle"), skeleton.point("right_ankle")]
+        y_values = [float(pt[1]) for pt in ankle_points if pt is not None]
+        if not y_values:
+            return
+        target = max(y_values)
+        self._floor_line_y = 0.7 * self._floor_line_y + 0.3 * target
 
 class SectionBPipeline(BasePipeline):
 
@@ -674,6 +868,7 @@ class SectionBPipeline(BasePipeline):
         self.last_phone_bbox: Optional[BBox] = None
 
         self.last_audio_devices = []
+        self.document_artifacts: Dict[str, List[BBox]] = {"holders": [], "bundles": []}
 
         self._last_result: Optional[SectionBResult] = None
 
@@ -733,6 +928,7 @@ class SectionBPipeline(BasePipeline):
             self.last_phone_bbox = ObjectDetector.pick_phone_bbox(detections)
 
             self.last_audio_devices = ObjectDetector.pick_audio_devices(detections, [ear_detections])
+            self.document_artifacts = ObjectDetector.detect_document_artifacts(detections)
 
 
 
@@ -778,21 +974,14 @@ class SectionBPipeline(BasePipeline):
             save_snapshot("B", frame, timestamp)
 
             result = self.scorer.score(
-
                 skeleton,
-
                 self.last_monitor_bbox,
-
                 self.last_phone_bbox,
-
                 self.last_audio_devices,
-
                 frame.shape,
-
                 total_seconds,
-
                 continuous_seconds,
-
+                self.document_artifacts,
             )
 
             self._last_result = result
@@ -893,7 +1082,7 @@ class SectionCPipeline(BasePipeline):
 
         hand_preference: str = "right",
         detection_stride: int = 12,
-        draw_skeleton: bool = False,
+        draw_skeleton: bool = True,
 
     ) -> None:
 
@@ -1429,6 +1618,10 @@ class MultiSectionTkApp:
         self.placeholder_photo = ImageTk.PhotoImage(placeholder_image)
 
         self.latest_results: Dict[str, Optional[Any]] = {sec: None for sec in self.section_order}
+        self.manual_query_overrides: Dict[str, Dict[str, int]] = {}
+        self.latest_summaries: Dict[str, Optional[Dict[str, Any]]] = {sec: None for sec in self.section_order}
+        self.armrest_surface_choice: Optional[str] = None
+        self.armrest_prompt_done = False
 
         self.latest_timestamps: Dict[str, float] = {sec: 0.0 for sec in self.section_order}
 
@@ -1437,6 +1630,18 @@ class MultiSectionTkApp:
         self.rosa_total_scorer = ROSATotalScorer()
 
         self.last_excel_signature: Optional[Tuple[float, float, float]] = None
+
+        self.glare_client: Optional[GlareSerialClient] = None
+        self.glare_status_var = tk.StringVar(value="Glare detector nonaktif.")
+        self.glare_detail_var = tk.StringVar(
+            value="Set GLARE_SERIAL_PORT di config.py untuk menghubungkan Arduino glare sensor."
+        )
+        self.glare_last_update_var = tk.StringVar(value="Last update: -")
+        if GLARE_SERIAL_PORT:
+            self.glare_client = GlareSerialClient(GLARE_SERIAL_PORT, baudrate=GLARE_BAUDRATE)
+            self.glare_client.start()
+            self.glare_status_var.set(f"Menghubungkan glare detector di {GLARE_SERIAL_PORT}...")
+            self.glare_detail_var.set("Menunggu data dari sensor.")
 
 
 
@@ -1590,9 +1795,8 @@ class MultiSectionTkApp:
             if not pref_norm:
                 continue
             for label, _ in self.camera_presets:
-                if label.lower() == "none":
-                    continue
-                if pref_norm in label.lower():
+                label_norm = (label or "").strip().lower()
+                if pref_norm in label_norm:
                     return label
 
         desired = CAMERA_INDEX.get(section)
@@ -1642,13 +1846,24 @@ class MultiSectionTkApp:
 
 
 
-        container = ttk.Frame(self.root, padding=8)
-
-        container.grid(row=1, column=0, sticky="nsew")
-
+        scroll_holder = ttk.Frame(self.root)
+        scroll_holder.grid(row=1, column=0, sticky="nsew")
         self.root.rowconfigure(1, weight=1)
-
         self.root.columnconfigure(0, weight=1)
+        main_canvas = tk.Canvas(scroll_holder, highlightthickness=0)
+        main_scroll = ttk.Scrollbar(scroll_holder, orient="vertical", command=main_canvas.yview)
+        main_canvas.configure(yscrollcommand=main_scroll.set)
+        main_canvas.grid(row=0, column=0, sticky="nsew")
+        main_scroll.grid(row=0, column=1, sticky="ns")
+        scroll_holder.rowconfigure(0, weight=1)
+        scroll_holder.columnconfigure(0, weight=1)
+        container = ttk.Frame(main_canvas, padding=8)
+        main_canvas.create_window((0, 0), window=container, anchor="nw")
+        container.bind(
+            "<Configure>",
+            lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all")),
+        )
+        self._main_scroll_canvas = main_canvas
 
 
 
@@ -1744,6 +1959,37 @@ class MultiSectionTkApp:
 
             self.toggle_buttons[section] = btn
 
+        glare_frame = ttk.LabelFrame(
+            container,
+            text="Glare Detector",
+            padding=8,
+        )
+        glare_frame.grid(
+            row=1,
+            column=0,
+            columnspan=len(self.section_order),
+            sticky="ew",
+            pady=(12, 0),
+        )
+        container.rowconfigure(1, weight=0)
+        ttk.Label(
+            glare_frame,
+            textvariable=self.glare_status_var,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            glare_frame,
+            textvariable=self.glare_last_update_var,
+            font=("Segoe UI", 9, "italic"),
+        ).pack(anchor="w", pady=(0, 2))
+        ttk.Label(
+            glare_frame,
+            textvariable=self.glare_detail_var,
+            font=("Segoe UI", 10),
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w")
+
 
 
     def _build_indicator_rows(self, section: str, summary: Optional[Dict[str, Any]]) -> List[Tuple[str, str, str]]:
@@ -1766,11 +2012,25 @@ class MultiSectionTkApp:
             elif any(query_scores.values()):
                 data_ready = True
 
+        overrides = self.manual_query_overrides.get(section)
+        if overrides:
+            query_scores.update({str(k): int(v) for k, v in overrides.items()})
+
         row_specs = QUERY_DISPLAY.get(spec["query_key"], [])
         if not row_specs:
             return [("0 of 0", "No indicators configured", "unknown")]
 
         for key, label, weight in row_specs:
+            if (
+                section == "C"
+                and key == "documents_used_no_document_holder"
+                and key not in query_scores
+            ):
+                front_summary = self.latest_summaries.get("B")
+                if front_summary:
+                    front_queries = front_summary.get("queries", {})
+                    if isinstance(front_queries, dict) and key in front_queries:
+                        query_scores[key] = int(front_queries.get(key, 0))
             value = int(query_scores.get(key, 0))
             if weight is None:
                 status_text = "info"
@@ -1795,6 +2055,22 @@ class MultiSectionTkApp:
 
         return rows
 
+    def _apply_manual_overrides_to_summary(
+        self,
+        section: str,
+        summary: Dict[str, Any],
+        section_result: Optional[Any],
+    ) -> None:
+        """Ensure manual questionnaire answers propagate to summaries/results."""
+        overrides = self.manual_query_overrides.get(section)
+        if not overrides:
+            return
+        queries = summary.setdefault("queries", {})
+        for key, value in overrides.items():
+            queries[key] = int(value)
+        if section_result is not None and hasattr(section_result, "query_breakdown"):
+            section_result.query_breakdown.update({k: int(v) for k, v in overrides.items()})
+
     def _update_indicator_panel(self, section: str, summary: Optional[Dict[str, Any]]) -> None:
         """Refresh a section's indicator panel with the latest badge colors."""
         panel = self.indicator_panels.get(section)
@@ -1810,6 +2086,80 @@ class MultiSectionTkApp:
         if weight is None or weight <= 0:
             return "unknown"
         return "alert" if value > 0 else "ok"
+
+    def _set_manual_override(self, section: str, key: str, value: int) -> None:
+        """Record manual responses and refresh cached summaries."""
+        overrides = self.manual_query_overrides.setdefault(section, {})
+        overrides[key] = int(value)
+        cached = self.latest_summaries.get(section)
+        if cached is not None:
+            patched = copy.deepcopy(cached)
+            patched.setdefault("queries", {})[key] = int(value)
+            self.latest_summaries[section] = patched
+            self._update_indicator_panel(section, patched)
+        result_obj = self.latest_results.get(section)
+        if result_obj is not None and hasattr(result_obj, "query_breakdown"):
+            result_obj.query_breakdown[key] = int(value)
+
+    def _prompt_armrest_surface(self, force: bool = False) -> None:
+        """Ask the user which armrest surface is used (questionnaire fallback)."""
+        if self.armrest_prompt_done:
+            return
+        if not force and not self.section_running.get("A"):
+            return
+        dialog = ArmrestSurfaceDialog(
+            self.root,
+            default=self.armrest_surface_choice,
+            image_path=HARD_SURFACE_IMAGE,
+        )
+        choice = getattr(dialog, "result", None)
+        if not choice:
+            return
+        normalized = choice.strip().lower()
+        self.armrest_surface_choice = normalized
+        flag = 0 if normalized == "empuk" else 1
+        self._set_manual_override("A", "hard_or_damaged_surface", flag)
+        self.armrest_prompt_done = True
+
+    def _refresh_glare_status(self) -> None:
+        """Update glare detector status box."""
+        if self.glare_client is None:
+            self.glare_status_var.set("Glare detector nonaktif (GLARE_SERIAL_PORT=None).")
+            self.glare_detail_var.set(
+                "Atur GLARE_SERIAL_PORT di config.py bila ingin membaca sensor glare berbasis Arduino."
+            )
+            self.glare_last_update_var.set("Last update: -")
+            return
+
+        snapshot = self.glare_client.snapshot()
+        connected = bool(snapshot.get("connected"))
+        port = GLARE_SERIAL_PORT or "-"
+        status = "Connected" if connected else "Disconnected"
+        self.glare_status_var.set(f"Glare detector: {status} ({port})")
+
+        updated_at = snapshot.get("updated_at")
+        if isinstance(updated_at, (int, float)) and updated_at > 0:
+            ts = time.strftime("%H:%M:%S", time.localtime(updated_at))
+            self.glare_last_update_var.set(f"Last update: {ts}")
+        else:
+            self.glare_last_update_var.set("Last update: -")
+
+        glare_flag = snapshot.get("glare")
+        ratio = snapshot.get("ratio")
+        lux_screen = snapshot.get("lux_screen")
+        lux_room = snapshot.get("lux_room")
+        msg_parts = [str(snapshot.get("message", ""))]
+        if glare_flag is True:
+            msg_parts.append("Status: GLARE terdeteksi.")
+        elif glare_flag is False:
+            msg_parts.append("Status: aman (tidak glare).")
+        else:
+            msg_parts.append("Menunggu pembacaan pertama...")
+        if isinstance(ratio, (int, float)):
+            msg_parts.append(f"Rasio layar/ambient {ratio:.2f}")
+        if isinstance(lux_screen, (int, float)) and isinstance(lux_room, (int, float)):
+            msg_parts.append(f"Lux layar {lux_screen:.0f} | ambient {lux_room:.0f}")
+        self.glare_detail_var.set(" ".join(part for part in msg_parts if part))
 
 
 
@@ -1878,6 +2228,11 @@ class MultiSectionTkApp:
         if self.section_running.get(section):
 
             return
+
+        if section == "A":
+            self.manual_query_overrides.pop("A", None)
+            self.armrest_surface_choice = None
+            self.armrest_prompt_done = False
 
         cam_index = self._resolve_camera_index(section)
 
@@ -1956,6 +2311,8 @@ class MultiSectionTkApp:
         self.latest_results[section] = None
 
         self.latest_timestamps[section] = 0.0
+
+        self.latest_summaries[section] = None
 
         self._update_status()
 
@@ -2071,6 +2428,9 @@ class MultiSectionTkApp:
 
         """Stop all active sections."""
 
+        if self.section_running.get("A"):
+            self._prompt_armrest_surface()
+
         for section in list(self.section_order):
 
             if self.section_running.get(section):
@@ -2139,11 +2499,12 @@ class MultiSectionTkApp:
 
             self.score_vars[section].set(text)
 
+            section_result = result.summary.get("section_result")
+            self._apply_manual_overrides_to_summary(section, result.summary, section_result)
             self._update_indicator_panel(section, result.summary)
+            self.latest_summaries[section] = copy.deepcopy(result.summary)
 
             if result.summary.get("just_updated"):
-
-                section_result = result.summary.get("section_result")
 
                 if section_result is not None:
 
@@ -2161,6 +2522,7 @@ class MultiSectionTkApp:
 
                     self._maybe_export_excel()
 
+        self._refresh_glare_status()
         self.root.after(33, self._update_loop)
 
 
@@ -2169,7 +2531,10 @@ class MultiSectionTkApp:
 
         """Handle window close by stopping all pipelines first."""
 
+        self._prompt_armrest_surface(force=True)
         self.stop()
+        if self.glare_client is not None:
+            self.glare_client.stop()
 
         self.root.destroy()
 
@@ -2180,6 +2545,10 @@ def main(multi: bool = True) -> None:
     """Launch Tkinter ROSA application in multi or single-section mode."""
 
     root = tk.Tk()
+    try:
+        root.state("zoomed")
+    except Exception:
+        root.geometry("1280x720")
 
     if multi:
 

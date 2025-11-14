@@ -21,6 +21,7 @@ EXCEL_HEADERS = [
     "Headset / One Hand on Phone & Neutral Neck Posture",
     "Too Far of Reach (outside of 30 cm)",
     "Neck and Shoulder Hold",
+    "Documents used - no document holder",
     "No Hands-Free Options",
     "Mouse in line with shoulder",
     "Reaching to mouse",
@@ -59,6 +60,7 @@ _QUERY_HEADER_MAP: Dict[str, Tuple[str, str]] = {
     "Headset / One Hand on Phone & Neutral Neck Posture": ("front", "headset_or_one_hand_on_phone_neutral_neck_posture"),
     "Too Far of Reach (outside of 30 cm)": ("front", "too_far_of_reach_outside_30_cm"),
     "Neck and Shoulder Hold": ("front", "neck_and_shoulder_hold"),
+    "Documents used - no document holder": ("front", "documents_used_no_document_holder"),
     "No Hands-Free Options": ("front", "no_hands_free_options"),
     "Mouse in line with shoulder": ("overhead", "mouse_in_line_with_shoulder"),
     "Reaching to mouse": ("overhead", "reaching_to_mouse"),
@@ -79,7 +81,7 @@ _QUERY_HEADER_MAP: Dict[str, Tuple[str, str]] = {
     "Angled too far back (>110°) or too far forward (<95°)": ("side", "angled_too_far_back_greater_than_110_or_too_far_forward_less_than_95"),
     "No back support (e.g., stool or worker leaning forward)": ("side", "no_back_support_or_worker_leaning_forward"),
     "Hard / damaged surface": ("side", "hard_or_damaged_surface"),
-    "Neck twist greater than 30°": ("overhead", "neck_twist_greater_than_30_deg"),
+    "Neck twist greater than 30°": ("front", "neck_twist_greater_than_30_deg"),
     "Deviation while typing": ("overhead", "deviation_while_typing"),
 }
 

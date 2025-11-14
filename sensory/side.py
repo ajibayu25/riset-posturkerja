@@ -89,9 +89,22 @@ def seat_height_components(
         # Flag loss of contact if ankle fails ratio threshold as well.
         if drop_ratio < min_ratio:
             foot_contact = False
+    metrics["foot_contact_flag"] = 1 if foot_contact else 0
     if not foot_contact:
         base = max(base, 3)
         queries["no_foot_contact_on_ground"] = 2
+
+    # Estimate a floor line from ankle heights for visualization/debugging.
+    valid_heights = [
+        float(skeleton.ankle_height(side))
+        for side in ("left", "right")
+        if not np.isnan(skeleton.ankle_height(side))
+    ]
+    if valid_heights:
+        avg_floor = float(np.mean(valid_heights))
+        metrics["estimated_floor_y"] = avg_floor
+    else:
+        metrics["estimated_floor_y"] = float("nan")
 
     avg_leg_len = float(np.mean(leg_lengths)) if leg_lengths else float("nan")
     metrics["avg_leg_length_px"] = avg_leg_len

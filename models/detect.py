@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
 from ultralytics import YOLO
@@ -132,6 +132,41 @@ class ObjectDetector:
                 bbox = tuple(map(int, coords))
                 devices.append((label, conf, bbox))  # type: ignore[arg-type]
         return devices
+
+    @staticmethod
+    def detect_document_artifacts(
+        prediction,
+        labels: Tuple[str, ...] = ("book", "folder", "file cabinet"),
+        min_conf: float = 0.15,
+    ) -> Dict[str, List[BBox]]:
+        """Group 'book-like' detections into holders vs bundles."""
+        artifacts: Dict[str, List[BBox]] = {"holders": [], "bundles": []}
+        if (
+            prediction is None
+            or getattr(prediction, "boxes", None) is None
+            or len(prediction.boxes) == 0
+        ):
+            return artifacts
+        names = prediction.names
+        boxes = prediction.boxes
+        for idx in range(len(boxes)):
+            label = names.get(int(boxes.cls[idx]), "")
+            if label not in labels:
+                continue
+            conf = float(boxes.conf[idx].item())
+            if conf < min_conf:
+                continue
+            coords = boxes.xyxy[idx].tolist()
+            x1, y1, x2, y2 = map(int, coords)
+            width = max(x2 - x1, 1)
+            height = max(y2 - y1, 1)
+            aspect = height / float(width)
+            bbox = (x1, y1, x2, y2)
+            if aspect >= 1.2:
+                artifacts["holders"].append(bbox)
+            else:
+                artifacts["bundles"].append(bbox)
+        return artifacts
 
     @staticmethod
     def pick_table_candidate(

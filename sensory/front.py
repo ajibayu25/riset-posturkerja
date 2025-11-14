@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -14,7 +14,11 @@ from .side import get_work_surface_flag
 BBox = Tuple[int, int, int, int]
 
 
-def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentOutput:
+def monitor_components(
+    skeleton: Skeleton2D,
+    bbox: Optional[BBox],
+    document_artifacts: Optional[Dict[str, List[BBox]]] = None,
+) -> ComponentOutput:
     """Derive monitor posture indicators from skeleton and detection.
 
     Measurements follow ROSA Section B guidance combined with CSA Z412/ISO 9241 ergonomic
@@ -31,6 +35,8 @@ def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentO
         "too_far_of_reach_outside_30_cm": 0,
         "neck_and_shoulder_hold": 0,
         "no_hands_free_options": 0,
+        "documents_used_no_document_holder": 0,
+        "neck_twist_greater_than_30_deg": 0,
     }
     metrics: Dict[str, float] = {}
     adjustments: Dict[str, int] = {}
@@ -45,6 +51,10 @@ def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentO
         torso_len = 100.0
 
     nose = skeleton.point("nose")
+    neck_sidebend = skeleton.neck_sidebend()
+    metrics["neck_sidebend_front"] = neck_sidebend
+    neck_twist_signed = 0.0
+    neck_twist_abs = 0.0
     if shoulder_mid is not None and nose is not None:
         neck_vec = nose - shoulder_mid
         metrics["neck_vertical"] = float(neck_vec[1])
@@ -54,6 +64,29 @@ def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentO
         if neck_vec[1] < -cfg["vertical_angle_deg"]["too_high_min"]:
             base = max(base, 2)
             adjustments["too_high"] = SECTION_B_ADJUSTMENTS["monitor"].get("too_high", 1)
+        dx = float(nose[0] - shoulder_mid[0])
+        dy = float(shoulder_mid[1] - nose[1])
+        if abs(dy) < 1e-3:
+            dy = 1e-3 if dy >= 0 else -1e-3
+        neck_twist_signed = float(np.degrees(np.arctan2(dx, dy)))
+        neck_twist_abs = abs(neck_twist_signed)
+    conf_thr = 0.45
+    left_visible = skeleton.confidence_of("left_ear") > conf_thr and skeleton.point("left_ear") is not None
+    right_visible = skeleton.confidence_of("right_ear") > conf_thr and skeleton.point("right_ear") is not None
+    if left_visible and not right_visible:
+        neck_twist_signed = 45.0
+        neck_twist_abs = abs(neck_twist_signed)
+    elif right_visible and not left_visible:
+        neck_twist_signed = -45.0
+        neck_twist_abs = abs(neck_twist_signed)
+    twist_thresh = cfg.get("neck_twist_deg", 30.0)
+    metrics["neck_twist_signed_deg"] = neck_twist_signed
+    metrics["neck_twist_abs_deg"] = neck_twist_abs
+    metrics["left_ear_visible"] = 1 if left_visible else 0
+    metrics["right_ear_visible"] = 1 if right_visible else 0
+    if neck_twist_abs >= twist_thresh:
+        queries["neck_twist_greater_than_30_deg"] = 1
+        adjustments["neck_twist"] = SECTION_B_ADJUSTMENTS["monitor"].get("neck_twist", 1)
 
     left_shoulder = skeleton.point("left_shoulder")
     right_shoulder = skeleton.point("right_shoulder")
@@ -107,6 +140,27 @@ def monitor_components(skeleton: Skeleton2D, bbox: Optional[BBox]) -> ComponentO
             if ratio > cfg["distance_cm"]["too_far_min"] / 10.0:
                 adjustments["too_far"] = SECTION_B_ADJUSTMENTS["monitor"].get("too_far", 1)
                 queries["too_far_of_reach_outside_30_cm"] = 2
+
+    doc_holder_present = bool(document_artifacts and document_artifacts.get("holders"))
+    doc_bundle_present = bool(document_artifacts and document_artifacts.get("bundles"))
+    bundle_offset = False
+    if doc_bundle_present and bbox is not None and document_artifacts:
+        monitor_center = 0.5 * (bbox[0] + bbox[2])
+        monitor_half_width = max((bbox[2] - bbox[0]) / 2.0, 1.0)
+        for doc_bbox in document_artifacts.get("bundles", []):
+            doc_center = 0.5 * (doc_bbox[0] + doc_bbox[2])
+            dx = abs(doc_center - monitor_center)
+            if dx >= monitor_half_width * 0.8:
+                bundle_offset = True
+                break
+    if doc_bundle_present and not doc_holder_present:
+        twist_thresh = cfg.get("neck_twist_deg", 30.0)
+        if neck_twist_abs >= twist_thresh and (bundle_offset or bbox is None):
+            adjustments["no_document_holder"] = SECTION_B_ADJUSTMENTS["monitor"].get("no_document_holder", 1)
+            queries["documents_used_no_document_holder"] = 1
+    metrics["document_holder_detected"] = 1 if doc_holder_present else 0
+    metrics["document_bundle_detected"] = 1 if doc_bundle_present else 0
+    metrics["document_bundle_offset_flag"] = 1 if bundle_offset else 0
 
     return ComponentOutput(
         base=base,

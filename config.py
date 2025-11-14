@@ -28,13 +28,17 @@ CAMERA_PRESETS = [
 # camera labels reported by the OS. The first match is chosen automatically.
 # Update the strings to reflect the devices you typically connect.
 CAMERA_DEFAULTS = {
-    "A": ["HD Webcam"],                 # Side
-    "B": ["Integrated Camera"],         # Front
-    "C": ["HD Pro Webcam", "C920"],     # Overhead
+    "A": ["None"],
+    "B": ["None"],
+    "C": ["None"],
 }
 
 # Mouse hand preference for Section C
 SECTIONC_HAND = "right"
+
+# External glare detector (Arduino) serial settings
+GLARE_SERIAL_PORT = None  # e.g. "COM5" or "/dev/ttyUSB0"
+GLARE_BAUDRATE = 115200
 
 # Ekspor data riset
 EXPORT_CSV   = "rosa_export.csv"

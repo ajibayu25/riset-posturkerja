@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -89,13 +89,14 @@ class SectionBScorer:
         frame_shape: Tuple[int, int, int],
         total_seconds: float,
         continuous_seconds: float,
+        document_artifacts: Optional[Dict[str, List[BBox]]] = None,
     ) -> SectionBResult:
         """Main entry: compute axes, grid lookup, and duration adjustments.
 
         The ROSA manual treats monitor and telephone axes independently; we
         mirror that separation here so the GUI/export can break down each axis
         while still feeding the combined score into the Section B matrix."""
-        monitor_comp = monitor_components(skeleton, monitor_bbox)
+        monitor_comp = monitor_components(skeleton, monitor_bbox, document_artifacts)
         phone_comp = phone_components(skeleton, phone_bbox, audio_devices, frame_shape)
 
         monitor_score = AxisScore(
@@ -180,6 +181,7 @@ class LiveSectionBApp:
         self.last_monitor_bbox: Optional[BBox] = None
         self.last_phone_bbox: Optional[BBox] = None
         self.last_audio_devices = []
+        self.document_artifacts: Dict[str, List[BBox]] = {"holders": [], "bundles": []}
 
     def _apply_smoothing(self, keypoints: np.ndarray) -> np.ndarray:
         """Apply exponential smoothing to raw pose keypoints."""
@@ -220,6 +222,7 @@ class LiveSectionBApp:
         self.last_phone_bbox = ObjectDetector.pick_phone_bbox(detections)
         ear_pred = self.audio_detector.predict(frame)
         self.last_audio_devices = ObjectDetector.pick_audio_devices(detections, [ear_pred])
+        self.document_artifacts = ObjectDetector.detect_document_artifacts(detections)
 
     def run(self) -> None:
         """Main loop capturing frames, scoring, and updating the preview window."""
@@ -252,6 +255,7 @@ class LiveSectionBApp:
                         frame.shape,
                         total_seconds,
                         continuous_seconds,
+                        document_artifacts=self.document_artifacts,
                     )
                     self.last_result = result
                     overlay_lines = self._format_overlay(result)

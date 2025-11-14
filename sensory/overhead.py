@@ -28,7 +28,13 @@ def mouse_components(
     and act as inputs for explanatory metrics exported to the GUI/Excel.
     """
     cfg = SECTION_C_THRESHOLDS["mouse"]
-    hand_bboxes = hand_bboxes or []
+    mouse_center = None
+    if mouse_bbox is not None:
+        x1, y1, x2, y2 = mouse_bbox
+        mouse_center = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=float)
+    hand_bboxes = list(hand_bboxes or [])
+    synthetic = _synthetic_hand_boxes(skeleton, mouse_center)
+    hand_bboxes.extend(synthetic)
     queries: Dict[str, int] = {
         "mouse_in_line_with_shoulder": 0,
         "reaching_to_mouse": 0,
@@ -57,9 +63,8 @@ def mouse_components(
     if any(pt is None for pt in (shoulder, elbow, wrist, hip)):
         return ComponentOutput(base=base, adjustments=adjustments, metrics=metrics, queries=queries)
 
-    if mouse_bbox is not None:
-        x1, y1, x2, y2 = mouse_bbox
-        mouse = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=float)
+    if mouse_center is not None:
+        mouse = mouse_center
     else:
         mouse = np.array(wrist, dtype=float)
     metrics["mouse_center_x"] = float(mouse[0])
@@ -135,7 +140,7 @@ def _match_hand_centers(
     skeleton: Skeleton2D,
     hand_bboxes: List[BBox],
 ) -> Dict[str, np.ndarray]:
-    """Assign detected hand boxes to left/right wrists."""
+    """Assign detected hand boxes to left/right wrists and fall back to pose."""
     assignments: Dict[str, np.ndarray] = {}
     remaining = list(enumerate(hand_bboxes))
     for side in ("left", "right"):
@@ -161,7 +166,43 @@ def _match_hand_centers(
                 assignments[side] = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=float)
                 remaining.pop(i)
                 break
+    # Fallback: approximate hand center using pose wrists if detection missing.
+    for side in ("left", "right"):
+        if side in assignments:
+            continue
+        wrist = skeleton.point(f"{side}_wrist")
+        elbow = skeleton.point(f"{side}_elbow")
+        if wrist is None or elbow is None:
+            continue
+        w = np.asarray(wrist, dtype=float)
+        e = np.asarray(elbow, dtype=float)
+        vec = w - e
+        if np.linalg.norm(vec) < 1e-3:
+            continue
+        assignments[side] = w + 0.25 * vec  # extend slightly beyond wrist to mimic palm
     return assignments
+
+
+def _synthetic_hand_boxes(skeleton: Skeleton2D, mouse_center: Optional[np.ndarray] = None) -> List[BBox]:
+    """Create pseudo hand bounding boxes around wrists when YOLO hands absent."""
+    boxes: List[BBox] = []
+    shoulder_width = skeleton.shoulder_width()
+    if np.isnan(shoulder_width) or shoulder_width <= 0:
+        shoulder_width = 80.0
+    box_half_w = int(max(12, shoulder_width * 0.15))
+    box_half_h = int(max(10, shoulder_width * 0.10))
+    for side in ("left", "right"):
+        wrist = skeleton.point(f"{side}_wrist")
+        if wrist is None:
+            continue
+        center = np.array(wrist, dtype=float)
+        if mouse_center is not None:
+            direction = mouse_center - center
+            if np.linalg.norm(direction) > 1e-3:
+                center = center + 0.35 * direction
+        x, y = int(center[0]), int(center[1])
+        boxes.append((x - box_half_w, y - box_half_h, x + box_half_w, y + box_half_h))
+    return boxes
 
 
 def keyboard_components(

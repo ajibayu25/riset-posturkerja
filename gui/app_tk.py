@@ -359,238 +359,210 @@ class ArmrestSurfaceDialog(simpledialog.Dialog):
     def apply(self) -> None:
         self.result = self._selection.get()
 
+class PostSessionDialog(simpledialog.Dialog):
+    """Modal dialog to capture all questionnaire-based ROSA items on exit."""
+
+    def __init__(self, master: tk.Widget) -> None:
+        self.results: Dict[str, Any] = {}
+        self._vars: Dict[str, tk.Variable] = {}
+        self._photos: Dict[str, ImageTk.PhotoImage] = {}
+        super().__init__(master, title="Kuesioner Akhir Sesi")
+
+    def body(self, master: tk.Widget) -> None:
+        main_frame = ttk.Frame(master)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # --- Armrest Surface ---
+        armrest_frame = ttk.LabelFrame(main_frame, text="1. Kondisi Permukaan Armrest", padding=6)
+        armrest_frame.pack(fill="x", pady=(0, 10))
+
+        if HARD_SURFACE_IMAGE.exists():
+            try:
+                image = Image.open(HARD_SURFACE_IMAGE)
+                image.thumbnail((240, 135), Image.LANCZOS)
+                self._photos["armrest_surface"] = ImageTk.PhotoImage(image)
+                ttk.Label(armrest_frame, image=self._photos["armrest_surface"]).pack(anchor="center", pady=(0, 6))
+            except Exception:
+                pass
+        armrest_var = tk.StringVar(value="empuk")
+        self._vars["hard_or_damaged_surface"] = armrest_var
+        for text, val in ArmrestSurfaceDialog.OPTIONS:
+            ttk.Radiobutton(armrest_frame, text=text, value=val, variable=armrest_var).pack(anchor="w")
+
+        # --- Non-Adjustable Components ---
+        adj_frame = ttk.LabelFrame(main_frame, text="2. Komponen yang Tidak Dapat Disesuaikan", padding=6)
+        adj_frame.pack(fill="x")
+        
+        adj_items = [
+            ("seat_height_non_adjustable", "Tinggi Kursi", "non_adjustable_seat_height.png"),
+            ("seat_depth_non_adjustable", "Kedalaman Kursi", "non_adjustable_seat_depth.png"),
+            ("armrest_non_adjustable", "Sandaran Tangan (Armrest)", "non_adjustable_armrest.png"),
+            ("back_support_non_adjustable", "Sandaran Punggung", "non_adjustable_back_support.png"),
+            ("keyboard_platform_non_adjustable", "Platform Keyboard", "non_adjustable_keyboard.png"),
+        ]
+
+        for key, label, img_name in adj_items:
+            item_frame = ttk.Frame(adj_frame)
+            item_frame.pack(fill="x", pady=4)
+
+            img_path = ASSETS_DIR / img_name
+            if img_path.exists():
+                try:
+                    image = Image.open(img_path)
+                    image.thumbnail((120, 80), Image.LANCZOS)
+                    self._photos[key] = ImageTk.PhotoImage(image)
+                    img_label = ttk.Label(item_frame, image=self._photos[key])
+                    img_label.pack(side="left", padx=(0, 10))
+                except Exception:
+                    pass
+
+            var = tk.BooleanVar(value=False)
+            self._vars[key] = var
+            cb = ttk.Checkbutton(item_frame, text=label, variable=var)
+            cb.pack(side="left", anchor="w")
+
+        return main_frame
+
+    def apply(self) -> None:
+        self.results = {}
+        # Armrest surface
+        armrest_choice = self._vars["hard_or_damaged_surface"].get()
+        self.results["hard_or_damaged_surface"] = 1 if armrest_choice != "empuk" else 0
+
+        # Non-adjustable flags
+        adj_keys = [
+            "seat_height_non_adjustable",
+            "seat_depth_non_adjustable",
+            "armrest_non_adjustable",
+            "back_support_non_adjustable",
+            "keyboard_platform_non_adjustable",
+        ]
+        for key in adj_keys:
+            if self._vars[key].get():
+                self.results[key] = 1
 
 
 BBox = Tuple[int, int, int, int]
 
 COCO_EDGES: Tuple[Tuple[int, int], ...] = (
-
     (0, 1), (0, 2), (1, 3), (2, 4),
-
     (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
-
     (5, 11), (6, 12), (11, 12),
-
     (11, 13), (13, 15), (12, 14), (14, 16),
-
 )
 
 
-
-
-
 def draw_skeleton(frame: np.ndarray, keypoints: np.ndarray, color: Tuple[int, int, int] = (0, 255, 0)) -> np.ndarray:
-
     """Return a copy of frame with pose keypoints/edges drawn for debugging."""
-
     vis = frame.copy()
-
     for x, y in keypoints:
-
         cv2.circle(vis, (int(x), int(y)), 4, color, -1)
-
     for a, b in COCO_EDGES:
-
         if a < len(keypoints) and b < len(keypoints):
-
             pa, pb = keypoints[a], keypoints[b]
-
             cv2.line(vis, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), (0, 200, 255), 2)
-
     return vis
-
-
-
 
 
 def put_text_lines(frame: np.ndarray, lines: List[str], origin: Tuple[int, int] = (16, 32), color: Tuple[int, int, int] = (0, 255, 255)) -> np.ndarray:
-
     """Overlay a list of strings onto the frame starting at origin."""
-
     vis = frame.copy()
-
     x, y = origin
-
     for idx, text in enumerate(lines):
-
         cv2.putText(
-
             vis,
-
             text,
-
             (x, y + idx * 26),
-
             cv2.FONT_HERSHEY_SIMPLEX,
-
             0.6,
-
             color,
-
             2,
-
             cv2.LINE_AA,
-
         )
-
     return vis
 
 
-
-
-
 @dataclass
-
 class PipelineResult:
-
     """Capture the latest processed frame and metadata summary."""
-
     frame: np.ndarray
-
     summary: Dict[str, Any]
 
 
-
-
-
 class BasePipeline:
-
     """Common webcam-to-pose scoring loop shared by each section pipeline."""
 
     def __init__(self, cam_index: int, export_mode: str = "csv", smoothing_alpha: float = 0.3) -> None:
-
         """Open camera stream and prepare pose estimator & smoothing."""
-
         self.cam_index = cam_index
-
         self.export_mode = export_mode
-
         if platform.system() == "Windows":
-
             self.cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
-
         else:
-
             self.cap = cv2.VideoCapture(cam_index)
-
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
         self.cap.set(cv2.CAP_PROP_FPS, 30)
-
         self.pose = PoseEstimator(model_path=POSE_MODEL, device=DEVICE)
-
         self.smoother = KeypointSmoother(alpha=smoothing_alpha)
-
         self.session_start = time.time()
-
         self.continuous_start = self.session_start
-
         self.last_export_ts = 0.0
-
         self.export_interval = 5.0
-
         self.eval_interval = 10.0
-
         self.last_eval_ts = 0.0
 
-
-
     def is_opened(self) -> bool:
-
         """Return True if the capture device is ready."""
-
         return self.cap.isOpened()
 
-
-
     def reset_continuous(self) -> None:
-
         """Reset continuous exposure timer (triggered when breaks occur)."""
-
         self.continuous_start = time.time()
 
-
-
     def release(self) -> None:
-
         """Release underlying camera resource."""
-
         if self.cap.isOpened():
-
             self.cap.release()
 
-
-
     def _maybe_export(self, row: Dict[str, float]) -> None:
-
         """Write CSV/JSON rows at most every export_interval seconds."""
-
         if self.export_mode == "none":
-
             return
 
         now = time.time()
-
         if now - self.last_export_ts < self.export_interval:
-
             return
 
         self.last_export_ts = now
-
         if self.export_mode == "csv":
-
             export_csv(EXPORT_CSV, row)
-
         elif self.export_mode == "json":
-
             export_json(EXPORT_JSONL, row)
 
-
-
     def step(self) -> Optional[PipelineResult]:
-
         """Process next frame and return processed result or None if stream ended."""
-
         ok, frame = self.cap.read()
-
         if not ok:
-
             return None
 
         ts = time.time()
-
         keypoints = self.pose.predict_xy(frame)
-
         if keypoints is not None:
-
             keypoints = self.smoother.update(keypoints[:, :2], timestamp=ts)
 
         evaluate = False
-
         if self.last_eval_ts == 0.0 or ts - self.last_eval_ts >= self.eval_interval:
-
             evaluate = True
-
             self.last_eval_ts = ts
 
         result = self.process_frame(frame, keypoints, ts, evaluate)
-
         remaining = max(0.0, self.eval_interval - (ts - self.last_eval_ts))
-
         result.summary.setdefault("next_update_in", remaining)
-
         return result
 
-
-
     def process_frame(self, frame: np.ndarray, keypoints: Optional[np.ndarray], timestamp: float, evaluate: bool) -> PipelineResult:
-
         raise NotImplementedError
-
-
-
 
 
 class SectionAPipeline(BasePipeline):
@@ -2031,11 +2003,15 @@ class MultiSectionTkApp:
                     front_queries = front_summary.get("queries", {})
                     if isinstance(front_queries, dict) and key in front_queries:
                         query_scores[key] = int(front_queries.get(key, 0))
-            value = int(query_scores.get(key, 0))
-            if weight is None:
-                status_text = "info"
+            if not data_ready and weight is not None:
+                status_text = "null"
+                value = 0
             else:
-                status_text = f"{value} of {weight}"
+                value = int(query_scores.get(key, 0))
+                if weight is None:
+                    status_text = "info"
+                else:
+                    status_text = f"{value} of {weight}"
             tag = self._indicator_tag_for_values(value, weight, data_ready)
             rows.append((status_text, label, tag))
 
@@ -2101,25 +2077,6 @@ class MultiSectionTkApp:
         if result_obj is not None and hasattr(result_obj, "query_breakdown"):
             result_obj.query_breakdown[key] = int(value)
 
-    def _prompt_armrest_surface(self, force: bool = False) -> None:
-        """Ask the user which armrest surface is used (questionnaire fallback)."""
-        if self.armrest_prompt_done:
-            return
-        if not force and not self.section_running.get("A"):
-            return
-        dialog = ArmrestSurfaceDialog(
-            self.root,
-            default=self.armrest_surface_choice,
-            image_path=HARD_SURFACE_IMAGE,
-        )
-        choice = getattr(dialog, "result", None)
-        if not choice:
-            return
-        normalized = choice.strip().lower()
-        self.armrest_surface_choice = normalized
-        flag = 0 if normalized == "empuk" else 1
-        self._set_manual_override("A", "hard_or_damaged_surface", flag)
-        self.armrest_prompt_done = True
 
     def _refresh_glare_status(self) -> None:
         """Update glare detector status box."""
@@ -2529,9 +2486,20 @@ class MultiSectionTkApp:
 
     def on_close(self) -> None:
 
-        """Handle window close by stopping all pipelines first."""
+        """Handle window close: prompt for final inputs, then stop all pipelines."""
+        dialog = PostSessionDialog(self.root)
+        results = getattr(dialog, "results", None)
+        if results:
+            # Section A overrides
+            self._set_manual_override("A", "hard_or_damaged_surface", results.get("hard_or_damaged_surface", 0))
+            self._set_manual_override("A", "seat_height_non_adjustable", results.get("seat_height_non_adjustable", 0))
+            self._set_manual_override("A", "seat_depth_non_adjustable", results.get("seat_depth_non_adjustable", 0))
+            self._set_manual_override("A", "armrest_non_adjustable", results.get("armrest_non_adjustable", 0))
+            self._set_manual_override("A", "back_support_non_adjustable", results.get("back_support_non_adjustable", 0))
+            
+            # Section C override
+            self._set_manual_override("C", "keyboard_platform_non_adjustable", results.get("keyboard_platform_non_adjustable", 0))
 
-        self._prompt_armrest_surface(force=True)
         self.stop()
         if self.glare_client is not None:
             self.glare_client.stop()
@@ -2567,6 +2535,3 @@ def main(multi: bool = True) -> None:
 if __name__ == "__main__":
 
     main(multi=True)
-
-
-

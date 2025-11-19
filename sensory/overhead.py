@@ -22,10 +22,10 @@ def mouse_components(
 ) -> ComponentOutput:
     """Evaluate mouse posture for ROSA Section C (mouse axis).
 
-    The overhead view allows us to measure lateral offset / reach distances
-    in pixels which we convert to centimetres using the estimated shoulder
-    breadth. Those measurements drive the ROSA "inline" vs "reaching" states
-    and act as inputs for explanatory metrics exported to the GUI/Excel.
+    Heuristics:
+    - px→cm from shoulder breadth; measure lateral offset, reach, abduction → inline vs reaching.
+    - Surface mismatch, pinch-grip via overlap between hand boxes (detected or synthesized) and mouse bbox.
+    - Hand boxes: use YOLO results plus pose-synthesized boxes nudged toward mouse to stay robust when a hand is missed.
     """
     cfg = SECTION_C_THRESHOLDS["mouse"]
     mouse_center = None
@@ -209,7 +209,12 @@ def keyboard_components(
     skeleton: Skeleton2D,
     hand_bboxes: Optional[List[BBox]] = None,
 ) -> ComponentOutput:
-    """Detect excessive radial/ulnar deviation while typing."""
+    """Detect excessive radial/ulnar deviation while typing.
+
+    Heuristics:
+    - Match each wrist to the nearest hand box (or synthesize from pose); compute angle between forearm and hand direction.
+    - Count deviations over threshold per side; any hit → deviation_while_typing and adjustment.
+    """
     queries: Dict[str, int] = {
         "deviation_while_typing": 0,
     }

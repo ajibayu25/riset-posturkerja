@@ -25,7 +25,12 @@ class MonitorPeripheralResult:
 
 
 class MonitorPeripheralScorer:
-    """Lookup helper that merges Section B and Section C scores into the combo grid."""
+    """Lookup helper that merges Section B and Section C scores into the combo grid.
+
+    Heuristic summary:
+    - Clamp Section B and Section C scores to the 1–9 axis.
+    - Use MONITOR_PERIPHERALS_GRID to get the combined monitor+peripheral score.
+    """
 
     def score(
         self,

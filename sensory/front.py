@@ -22,7 +22,7 @@ def monitor_components(
     """Derive monitor posture indicators from skeleton and detection.
 
     Measurements follow ROSA Section B guidance combined with CSA Z412/ISO 9241 ergonomic
-    targets.  Shoulder–elbow gaps are compared against the thresholds stored in
+    targets.  Shoulder?elbow gaps are compared against the thresholds stored in
     ``constants.thresholds``.  All geometric checks are normalised by an estimated torso
     length so that the heuristics remain scale-agnostic when only pixel data are available.
     """
@@ -178,9 +178,7 @@ def phone_components(
 ) -> ComponentOutput:
     """Derive telephone/earphone posture indicators.
 
-    Logic mirrors ROSA Section B telephone checklist: we observe lateral neck
-    flexion for shoulder holds, reaching distance for handset placement, and the
-    presence of hands-free devices near the ear region.
+    Heuristics:\n    - Sidebend neck ? shoulder hold.\n    - Reach handset (px?cm via shoulder breadth) ? outside 30 cm flag.\n    - Audio device near ear (phone/earbud/headset) ? hands-free vs none.
     """
     cfg = SECTION_B_THRESHOLDS["telephone"]
     cfg_front = SECTION_B_THRESHOLDS["front"]

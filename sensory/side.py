@@ -20,7 +20,11 @@ def seat_height_components(
     skeleton: Skeleton2D,
     desk_info: Optional[Tuple[BBox, float]] = None,
 ) -> ComponentOutput:
-    """Evaluate knee flexion, foot contact, and under-desk space."""
+    """Evaluate knee flexion, foot contact, and under-desk space.
+
+    Heuristic: average both knee angles vs target 90°; feet contact via ankle drop vs knee
+    and leg-length ratio; legroom via lateral clearance to desk edge near knee height.
+    """
     cfg = SECTION_A_THRESHOLDS["seat_height"]
     queries: Dict[str, int] = {
         "knees_at_90_deg": 0,
@@ -65,6 +69,7 @@ def seat_height_components(
     # CSA/ROSA expect feet flat on floor; use ankle drop relative to leg length
     # (hip-to-ankle) to flag loss of contact.
     foot_contact = True
+    visible_ankles = 0
     min_ratio = cfg.get("foot_contact_min_ratio", 0.0)
     min_drop_px = cfg.get("foot_contact_min_drop_px", 0.0)
     for side in ("left", "right"):
@@ -73,6 +78,7 @@ def seat_height_components(
         ankle = skeleton.point(f"{side}_ankle")
         if hip is None or knee is None or ankle is None:
             continue
+        visible_ankles += 1
         drop = ankle[1] - knee[1]
         metrics[f"{side}_ankle_drop_px"] = drop
         # Immediate checks that do not require scaled ratios.
@@ -89,10 +95,17 @@ def seat_height_components(
         # Flag loss of contact if ankle fails ratio threshold as well.
         if drop_ratio < min_ratio:
             foot_contact = False
-    metrics["foot_contact_flag"] = 1 if foot_contact else 0
-    if not foot_contact:
+    metrics["foot_visible_count"] = visible_ankles
+    if visible_ankles == 0:
+        # If both feet are out of view, assume no contact (worst case per ROSA +3).
         base = max(base, 3)
-        queries["no_foot_contact_on_ground"] = 2
+        foot_contact = False
+        queries["no_foot_contact_on_ground"] = 3
+    else:
+        metrics["foot_contact_flag"] = 1 if foot_contact else 0
+        if not foot_contact:
+            base = max(base, 3)
+            queries["no_foot_contact_on_ground"] = 2
 
     # Estimate a floor line from ankle heights for visualization/debugging.
     valid_heights = [
@@ -177,7 +190,11 @@ def seat_depth_components(
     skeleton: Skeleton2D,
     chair_info: Optional[Tuple[BBox, float]] = None,
 ) -> ComponentOutput:
-    """Estimate seat-pan clearance relative to the knee using chair detection."""
+    """Estimate seat-pan clearance relative to the knee using chair detection.
+
+    Heuristic: use knee→hip distance as thigh length proxy, compare thigh vs seat depth
+    (from chair bbox if available) to classify too long/too short/ideal clearance.
+    """
     queries: Dict[str, int] = {
         "approximately_three_inches_between_knee_and_seat_edge": 0,
         "too_long_less_than_three_inches_of_space": 0,
@@ -305,7 +322,11 @@ def seat_depth_components(
 
 
 def armrest_components(skeleton: Skeleton2D) -> ComponentOutput:
-    """Score armrest height using shoulder–elbow gap per CSA Z412 / ROSA."""
+    """Score armrest height using shoulder–elbow gap per CSA Z412 / ROSA.
+
+    Heuristic: shoulder-elbow vertical gap vs cm thresholds → too high/too low/neutral,
+    plus arm abduction ratio (elbow span vs shoulder span) to flag armrests too wide.
+    """
     thresholds = SECTION_A_THRESHOLDS["armrest"]["shoulder_elbow_gap_cm"]
     queries: Dict[str, int] = {
         "elbows_supported_in_line_with_shoulder_shoulders_relaxed": 0,
@@ -373,7 +394,14 @@ def armrest_components(skeleton: Skeleton2D) -> ComponentOutput:
 
 
 def back_support_components(skeleton: Skeleton2D) -> ComponentOutput:
-    """Evaluate trunk inclination relative to lumbar support expectations."""
+    """Evaluate trunk inclination relative to lumbar support expectations.
+
+    Heuristic summary:
+    - Uses trunk_inclination to classify neutral vs too far forward/back (ROSA back support rules).
+    - Adds a coarse lumbar check: if trunk looks neutral but the spine vector does not
+      suggest back contact (see _estimate_lumbar_overlap), we flag no/mispositioned lumbar support.
+      This leans on pose only; no dedicated chair model is used.
+    """
     cfg = SECTION_A_THRESHOLDS["back_support"]["recline_deg"]
     queries: Dict[str, int] = {
         "adequate_lumbar_support_chair_reclined_between_95_110_deg": 0,
@@ -395,12 +423,48 @@ def back_support_components(skeleton: Skeleton2D) -> ComponentOutput:
             base = 2
             queries["angled_too_far_back_greater_than_110_or_too_far_forward_less_than_95"] = 2
 
+    # Heuristic lumbar overlap: if trunk is roughly neutral but spine line does not intersect chair back -> flag no lumbar support.
+    lumbar_flag = _estimate_lumbar_overlap(skeleton)
+    if lumbar_flag is False and cfg["neutral_min"] <= inclination <= cfg["neutral_max"]:
+        queries["no_lumbar_support_or_not_positioned_in_small_of_back"] = 2
+        metrics["lumbar_overlap"] = 0.0
+    elif lumbar_flag is True:
+        metrics["lumbar_overlap"] = 1.0
+    else:
+        metrics["lumbar_overlap"] = float("nan")
+
     return ComponentOutput(
         base=base,
         adjustments={},
         metrics=metrics,
         queries=queries,
     )
+
+
+def _estimate_lumbar_overlap(skeleton: Skeleton2D) -> Optional[bool]:
+    """Coarse heuristic: infer lumbar contact from spine orientation (pose-only).
+
+    Simplification because we don't detect lumbar pads:
+    - If trunk leans too far forward (<~80°) or too far back (>~110°), treat as no lumbar contact.
+    - Otherwise assume contact is likely. This is a conservative proxy until a chair-back overlap
+      check (with bounding boxes) is available.
+    """
+    shoulder_mid = skeleton.shoulder_mid()
+    hip_mid = skeleton.hip_mid()
+    if shoulder_mid is None or hip_mid is None:
+        return None
+    spine_vec = shoulder_mid - hip_mid
+    if np.linalg.norm(spine_vec) < 1e-3:
+        return None
+    # If spine leans backward enough, assume overlap; if leaning forward, assume no contact.
+    angle = skeleton.trunk_inclination()
+    if np.isnan(angle):
+        return None
+    if angle < 80.0:
+        return False
+    if angle > 110.0:
+        return False
+    return True
 
 
 

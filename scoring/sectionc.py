@@ -71,7 +71,14 @@ class SectionCResult:
 
 
 class SectionCScorer:
-    """Compute Section C scores from a pose skeleton."""
+    """Compute Section C scores from a pose skeleton.
+
+    Heuristic summary:
+    - Mouse axis: lateral offset/reach/abduction (px→cm from shoulder breadth), surface mismatch,
+      pinch-grip via hand–mouse overlap (with pose-based fallback hand boxes).
+    - Keyboard axis: wrist deviation during typing using forearm vs hand vectors.
+    Scores map onto the Section C mouse/keyboard matrix.
+    """
     def __init__(self) -> None:
         self.mouse_axis_min = SECTION_C_MOUSE_AXIS[0]
         self.mouse_axis_max = SECTION_C_MOUSE_AXIS[-1]

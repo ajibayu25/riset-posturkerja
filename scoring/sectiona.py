@@ -87,7 +87,15 @@ class SectionAResult:
 
 
 class SectionAScorer:
-    """Transform pose skeletons into ROSA Section A scores."""
+    """Transform pose skeletons into ROSA Section A scores.
+
+    Heuristic summary:
+    - Seat height: knee angle vs 90°, ankle drop vs leg length → foot contact + legroom.
+    - Seat depth: knee clearance vs seat edge using chair bbox/thigh length.
+    - Armrest: shoulder–elbow gap and elbow span vs shoulder width.
+    - Back support: trunk inclination (95–110° neutral), coarse lumbar contact check.
+    All sub-scores feed the official Section A grid.
+    """
     def score(
         self,
         skeleton: Skeleton2D,

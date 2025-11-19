@@ -22,7 +22,12 @@ class ROSATotalResult:
 
 
 class ROSATotalScorer:
-    """Lookup helper for the final ROSA matrix."""
+    """Lookup helper for the final ROSA matrix.
+
+    Heuristic summary:
+    - Clamp chair score (Section A) and monitor+peripheral score to 1–10 axis.
+    - Use ROSA_FINAL_GRID to produce the overall ROSA total.
+    """
 
     def score(self, section_a: SectionAResult, monitor_peripherals: MonitorPeripheralResult) -> ROSATotalResult:
         chair_score = int(clamp(section_a.chair_score_final, ROSA_FINAL_AXIS[0], ROSA_FINAL_AXIS[-1]))

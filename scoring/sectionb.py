@@ -73,7 +73,14 @@ class SectionBResult:
 
 
 class SectionBScorer:
-    """Combine pose and detection measurements into ROSA Section B scores."""
+    """Combine pose and detection measurements into ROSA Section B scores.
+
+    Heuristic summary:
+    - Monitor axis: neck flex/extension, shoulder/elbow gaps, wrist span, distance to monitor.
+    - Telephone axis: neck sidebend (shoulder hold), reach to phone, hands-free device near ear.
+    - Document holder: bundle vs holder detections plus head twist/offset from monitor.
+    Scores are clamped and looked up in the Section B matrix.
+    """
     def __init__(self) -> None:
         self.monitor_axis_min = SECTION_B_MONITOR_AXIS[0]
         self.monitor_axis_max = SECTION_B_MONITOR_AXIS[-1]

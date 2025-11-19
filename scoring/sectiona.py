@@ -16,7 +16,7 @@ from constants.grids import (
     SECTION_A_VERTICAL_AXIS,
 )
 from constants.thresholds import SECTION_A_THRESHOLDS
-from core.geometry import Skeleton2D, clamp
+from core.geometry import Skeleton2D
 from core.smoothing import EMA
 from core.timers import duration_adjust
 from rosa_io.exporters import export_csv, export_json
@@ -137,15 +137,15 @@ class SectionAScorer:
         vertical_axis = seat_height.total + seat_depth.total
         horizontal_axis = armrest.total + back_support.total
 
-        vertical_axis = int(clamp(vertical_axis, SECTION_A_VERTICAL_AXIS[0], SECTION_A_VERTICAL_AXIS[-1]))
-        horizontal_axis = int(clamp(horizontal_axis, SECTION_A_HORIZONTAL_AXIS[0], SECTION_A_HORIZONTAL_AXIS[-1]))
+        vertical_axis = int(np.clip(vertical_axis, SECTION_A_VERTICAL_AXIS[0], SECTION_A_VERTICAL_AXIS[-1]))
+        horizontal_axis = int(np.clip(horizontal_axis, SECTION_A_HORIZONTAL_AXIS[0], SECTION_A_HORIZONTAL_AXIS[-1]))
 
         v_idx = vertical_axis - SECTION_A_VERTICAL_AXIS[0]
         h_idx = horizontal_axis - SECTION_A_HORIZONTAL_AXIS[0]
         chair_score_base = int(SECTION_A_GRID[v_idx, h_idx])
 
         duration_adj = duration_adjust(total_seconds, continuous_seconds)
-        chair_score_final = int(clamp(chair_score_base + duration_adj, 1, 10))
+        chair_score_final = int(np.clip(chair_score_base + duration_adj, 1, 10))
 
         return SectionAResult(
             timestamp=time.time(),

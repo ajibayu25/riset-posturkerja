@@ -11,6 +11,7 @@ This application is an auxiliary tool for conducting real-time posture assessmen
 - **CLI Mode**: Supports execution via the command-line for testing or running a single, specific section.
 - **Data Export**: Assessment results can be exported to CSV, JSONL, and XLSX formats for further analysis.
 - **Flexible Configuration**: Camera settings, models, and other preferences can be easily modified in the `config.py` file.
+- **External Glare Sensor**: Optional BH1750-based sensor (Arduino Nano) to measure glare/illumination and feed the UI status (see `glare_detector/`).
 
 ## Installation
 
@@ -89,7 +90,23 @@ python main.py --mode single --section <a|b|c> --cam <camera_index>
 - **`/rosa_io`**: Modules for handling data export to various formats.
 - **`/scoring`**: The main logic for calculating ROSA scores for each section (A, B, C) and the total.
 - **`/sensory`**: Code for interacting with external sensors like the glare sensor.
+- **`/glare_detector`**: PlatformIO project (Arduino Nano + BH1750) that measures ambient glare; communicates with the app over serial.
 - **`/snapshots`**: Default folder for saving captured images.
 - **`config.py`**: The main configuration file.
 - **`main.py`**: The main entry point of the application.
 - **`*.pt`**: Machine learning model weight files (YOLO).
+
+## Glare Detector (PlatformIO)
+
+The `glare_detector` folder contains Arduino firmware for a BH1750-based glare/illumination sensor that complements Section B (monitor/lighting) in the ROSA workflow.
+
+- **Hardware**: Arduino Nano (new bootloader) + BH1750 on I2C.
+- **Build/Upload** (default uses COM7):
+  ```bash
+  cd glare_detector
+  # Build
+  platformio run
+  # Upload to Nano
+  platformio run -t upload
+  ```
+- **App integration**: Set the serial port in `config.py` (`GLARE_SERIAL_PORT`) to your COM port. When connected, the GUI shows glare status alongside other Section B indicators.

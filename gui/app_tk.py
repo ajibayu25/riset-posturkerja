@@ -445,124 +445,233 @@ class PostSessionDialog(simpledialog.Dialog):
 BBox = Tuple[int, int, int, int]
 
 COCO_EDGES: Tuple[Tuple[int, int], ...] = (
+
     (0, 1), (0, 2), (1, 3), (2, 4),
+
     (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
+
     (5, 11), (6, 12), (11, 12),
+
     (11, 13), (13, 15), (12, 14), (14, 16),
+
 )
 
 
+
+
+
 def draw_skeleton(frame: np.ndarray, keypoints: np.ndarray, color: Tuple[int, int, int] = (0, 255, 0)) -> np.ndarray:
+
     """Return a copy of frame with pose keypoints/edges drawn for debugging."""
+
     vis = frame.copy()
+
     for x, y in keypoints:
+
         cv2.circle(vis, (int(x), int(y)), 4, color, -1)
+
     for a, b in COCO_EDGES:
+
         if a < len(keypoints) and b < len(keypoints):
+
             pa, pb = keypoints[a], keypoints[b]
+
             cv2.line(vis, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), (0, 200, 255), 2)
+
     return vis
+
+
+
 
 
 def put_text_lines(frame: np.ndarray, lines: List[str], origin: Tuple[int, int] = (16, 32), color: Tuple[int, int, int] = (0, 255, 255)) -> np.ndarray:
+
     """Overlay a list of strings onto the frame starting at origin."""
+
     vis = frame.copy()
+
     x, y = origin
+
     for idx, text in enumerate(lines):
+
         cv2.putText(
+
             vis,
+
             text,
+
             (x, y + idx * 26),
+
             cv2.FONT_HERSHEY_SIMPLEX,
+
             0.6,
+
             color,
+
             2,
+
             cv2.LINE_AA,
+
         )
+
     return vis
 
 
+
+
+
 @dataclass
+
 class PipelineResult:
+
     """Capture the latest processed frame and metadata summary."""
+
     frame: np.ndarray
+
     summary: Dict[str, Any]
 
 
+
+
+
 class BasePipeline:
+
     """Common webcam-to-pose scoring loop shared by each section pipeline."""
 
     def __init__(self, cam_index: int, export_mode: str = "csv", smoothing_alpha: float = 0.3) -> None:
+
         """Open camera stream and prepare pose estimator & smoothing."""
+
         self.cam_index = cam_index
+
         self.export_mode = export_mode
+
         if platform.system() == "Windows":
+
             self.cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
+
         else:
+
             self.cap = cv2.VideoCapture(cam_index)
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
         self.cap.set(cv2.CAP_PROP_FPS, 30)
+
         self.pose = PoseEstimator(model_path=POSE_MODEL, device=DEVICE)
+
         self.smoother = KeypointSmoother(alpha=smoothing_alpha)
+
         self.session_start = time.time()
+
         self.continuous_start = self.session_start
+
         self.last_export_ts = 0.0
+
         self.export_interval = 5.0
+
         self.eval_interval = 10.0
+
         self.last_eval_ts = 0.0
 
+
+
     def is_opened(self) -> bool:
+
         """Return True if the capture device is ready."""
+
         return self.cap.isOpened()
 
+
+
     def reset_continuous(self) -> None:
+
         """Reset continuous exposure timer (triggered when breaks occur)."""
+
         self.continuous_start = time.time()
 
+
+
     def release(self) -> None:
+
         """Release underlying camera resource."""
+
         if self.cap.isOpened():
+
             self.cap.release()
 
+
+
     def _maybe_export(self, row: Dict[str, float]) -> None:
+
         """Write CSV/JSON rows at most every export_interval seconds."""
+
         if self.export_mode == "none":
+
             return
 
         now = time.time()
+
         if now - self.last_export_ts < self.export_interval:
+
             return
 
         self.last_export_ts = now
+
         if self.export_mode == "csv":
+
             export_csv(EXPORT_CSV, row)
+
         elif self.export_mode == "json":
+
             export_json(EXPORT_JSONL, row)
 
+
+
     def step(self) -> Optional[PipelineResult]:
+
         """Process next frame and return processed result or None if stream ended."""
+
         ok, frame = self.cap.read()
+
         if not ok:
+
             return None
 
         ts = time.time()
+
         keypoints = self.pose.predict_xy(frame)
+
         if keypoints is not None:
+
             keypoints = self.smoother.update(keypoints[:, :2], timestamp=ts)
 
         evaluate = False
+
         if self.last_eval_ts == 0.0 or ts - self.last_eval_ts >= self.eval_interval:
+
             evaluate = True
+
             self.last_eval_ts = ts
 
         result = self.process_frame(frame, keypoints, ts, evaluate)
+
         remaining = max(0.0, self.eval_interval - (ts - self.last_eval_ts))
+
         result.summary.setdefault("next_update_in", remaining)
+
         return result
 
+
+
     def process_frame(self, frame: np.ndarray, keypoints: Optional[np.ndarray], timestamp: float, evaluate: bool) -> PipelineResult:
+
         raise NotImplementedError
+
+
+
 
 
 class SectionAPipeline(BasePipeline):
@@ -991,15 +1100,10 @@ class SectionBPipeline(BasePipeline):
         if result is not None:
 
             lines = [
-
                 f"Section B score {result.section_score} (dur {result.duration_adjustment:+d})",
-
                 f"Monitor axis: {result.horizontal_axis} | Phone axis: {result.vertical_axis}",
-
                 f"Monitor total {result.monitor.total} (base {result.monitor.base})",
-
                 f"Phone total {result.phone.total} (base {result.phone.base})",
-
             ]
 
             risk = "OK" if result.section_score < 5 else "High"
@@ -1009,23 +1113,14 @@ class SectionBPipeline(BasePipeline):
             display = put_text_lines(display, lines)
 
             summary.update(
-
                 {
-
                     "score": result.section_score,
-
                     "horizontal_axis": result.horizontal_axis,
-
                     "vertical_axis": result.vertical_axis,
-
                     "queries": result.query_breakdown,
-
                     "updated_at": self._last_updated_ts,
-
                     "section_result": result,
-
                     "just_updated": just_updated,
-
                 }
 
             )

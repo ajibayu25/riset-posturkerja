@@ -6,17 +6,26 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-import cv2
 import numpy as np
+import cv2
 
-from config import DEVICE, EXPORT_CSV, EXPORT_JSONL, POSE_MODEL
+from config import (
+    DEVICE,
+    EXPORT_CSV,
+    EXPORT_JSONL,
+    POSE_MODEL,
+    CAMERA_TARGET_FPS,
+    CAMERA_FRAME_WIDTH,
+    CAMERA_FRAME_HEIGHT,
+    DATA_CAPTURE_INTERVAL,
+)
 from constants.grids import (
     SECTION_A_GRID,
     SECTION_A_HORIZONTAL_AXIS,
     SECTION_A_VERTICAL_AXIS,
 )
 from constants.thresholds import SECTION_A_THRESHOLDS
-from core.geometry import Skeleton2D
+from core.geometry import Skeleton2D, clamp
 from core.smoothing import EMA
 from core.timers import duration_adjust
 from rosa_io.exporters import export_csv, export_json
@@ -137,15 +146,15 @@ class SectionAScorer:
         vertical_axis = seat_height.total + seat_depth.total
         horizontal_axis = armrest.total + back_support.total
 
-        vertical_axis = int(np.clip(vertical_axis, SECTION_A_VERTICAL_AXIS[0], SECTION_A_VERTICAL_AXIS[-1]))
-        horizontal_axis = int(np.clip(horizontal_axis, SECTION_A_HORIZONTAL_AXIS[0], SECTION_A_HORIZONTAL_AXIS[-1]))
+        vertical_axis = int(clamp(vertical_axis, SECTION_A_VERTICAL_AXIS[0], SECTION_A_VERTICAL_AXIS[-1]))
+        horizontal_axis = int(clamp(horizontal_axis, SECTION_A_HORIZONTAL_AXIS[0], SECTION_A_HORIZONTAL_AXIS[-1]))
 
         v_idx = vertical_axis - SECTION_A_VERTICAL_AXIS[0]
         h_idx = horizontal_axis - SECTION_A_HORIZONTAL_AXIS[0]
         chair_score_base = int(SECTION_A_GRID[v_idx, h_idx])
 
         duration_adj = duration_adjust(total_seconds, continuous_seconds)
-        chair_score_final = int(np.clip(chair_score_base + duration_adj, 1, 10))
+        chair_score_final = int(clamp(chair_score_base + duration_adj, 1, 10))
 
         return SectionAResult(
             timestamp=time.time(),
@@ -197,9 +206,9 @@ class LiveSectionAApp:
         self.export_mode = export_mode
         self.pose = PoseEstimator(model_path=model_name or POSE_MODEL, device=device or DEVICE)
         self.cap = cv2.VideoCapture(cam_index)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_TARGET_FPS)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
         self.ema: Optional[EMA] = EMA(alpha=smoothing_alpha) if smoothing_alpha else None
         self.scorer = SectionAScorer()
         self.session_start = time.time()
@@ -263,7 +272,7 @@ class LiveSectionAApp:
                     result = self.scorer.score(skeleton, total_seconds, continuous_seconds)
                     self.last_result = result
                     overlay_lines = self._format_overlay(result)
-                    if now - self.last_export_ts > 5.0:
+                    if now - self.last_export_ts > DATA_CAPTURE_INTERVAL:
                         self._export(result)
                         self.last_export_ts = now
                 elif self.last_result is not None:

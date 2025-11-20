@@ -9,7 +9,18 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from config import DET_MODEL, EARPHONE_MODEL, DEVICE, EXPORT_CSV, EXPORT_JSONL, POSE_MODEL
+from config import (
+    DET_MODEL,
+    EARPHONE_MODEL,
+    DEVICE,
+    EXPORT_CSV,
+    EXPORT_JSONL,
+    POSE_MODEL,
+    CAMERA_TARGET_FPS,
+    CAMERA_FRAME_WIDTH,
+    CAMERA_FRAME_HEIGHT,
+    DATA_CAPTURE_INTERVAL,
+)
 from constants.grids import MONITOR_PHONE_GRID, SECTION_B_MONITOR_AXIS, SECTION_B_PHONE_AXIS
 from core.geometry import Skeleton2D, clamp
 from core.smoothing import EMA
@@ -174,9 +185,9 @@ class LiveSectionBApp:
         self.detector = ObjectDetector(model_path=det_model or DET_MODEL, device=device or DEVICE)
         self.audio_detector = ObjectDetector(model_path=ear_model or EARPHONE_MODEL, device=device or DEVICE)
         self.cap = cv2.VideoCapture(cam_index)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_TARGET_FPS)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
         self.ema: Optional[EMA] = EMA(alpha=smoothing_alpha) if smoothing_alpha else None
         self.scorer = SectionBScorer()
         self.session_start = time.time()
@@ -266,7 +277,7 @@ class LiveSectionBApp:
                     )
                     self.last_result = result
                     overlay_lines = self._format_overlay(result)
-                    if now - self.last_export_ts > 5.0:
+                    if now - self.last_export_ts > DATA_CAPTURE_INTERVAL:
                         self._export(result)
                         self.last_export_ts = now
                 elif self.last_result is not None:

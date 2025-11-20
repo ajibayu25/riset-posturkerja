@@ -4,7 +4,6 @@ POSE_MODEL   = "yolov8n-pose.pt"
 DET_MODEL    = "yolov8n.pt"
 EARPHONE_MODEL = "yolo-earphone.pt"
 HAND_MODEL  = "yolo-handdetection.pt"
-FPS_TARGET   = 30
 
 # Camera assignment per ROSA section (A: chair, B: monitor, C: peripherals)
 CAMERA_INDEX = {
@@ -12,6 +11,14 @@ CAMERA_INDEX = {
     "B": 2,  # Front view fallback index
     "C": 1,  # Overhead view fallback index
 }
+
+# Default camera capture settings (lower than 1080p to keep CPU/GPU usage down)
+CAMERA_TARGET_FPS = 20
+CAMERA_FRAME_WIDTH = 960
+CAMERA_FRAME_HEIGHT = 540
+
+# Unified sampling/export interval for ROSA scores (seconds)
+DATA_CAPTURE_INTERVAL = 10.0
 
 # Friendly camera names exposed in the GUI OptionMenus.
 # Update indices so they match the OS device order you see in Device Manager.

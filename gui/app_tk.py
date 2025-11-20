@@ -46,6 +46,10 @@ from config import (
     CAMERA_DEFAULTS,
     CAMERA_INDEX,
     CAMERA_PRESETS,
+    CAMERA_TARGET_FPS,
+    CAMERA_FRAME_WIDTH,
+    CAMERA_FRAME_HEIGHT,
+    DATA_CAPTURE_INTERVAL,
     DET_MODEL,
     EARPHONE_MODEL,
     HAND_MODEL,
@@ -554,11 +558,11 @@ class BasePipeline:
 
             self.cap = cv2.VideoCapture(cam_index)
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
 
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
 
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_TARGET_FPS)
 
         self.pose = PoseEstimator(model_path=POSE_MODEL, device=DEVICE)
 
@@ -570,9 +574,9 @@ class BasePipeline:
 
         self.last_export_ts = 0.0
 
-        self.export_interval = 5.0
+        self.export_interval = DATA_CAPTURE_INTERVAL
 
-        self.eval_interval = 10.0
+        self.eval_interval = DATA_CAPTURE_INTERVAL
 
         self.last_eval_ts = 0.0
 

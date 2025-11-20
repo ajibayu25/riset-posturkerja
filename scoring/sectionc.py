@@ -9,7 +9,17 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from config import DEVICE, EXPORT_CSV, EXPORT_JSONL, HAND_MODEL, POSE_MODEL
+from config import (
+    DEVICE,
+    EXPORT_CSV,
+    EXPORT_JSONL,
+    HAND_MODEL,
+    POSE_MODEL,
+    CAMERA_TARGET_FPS,
+    CAMERA_FRAME_WIDTH,
+    CAMERA_FRAME_HEIGHT,
+    DATA_CAPTURE_INTERVAL,
+)
 from constants.grids import SECTIONC_MOUSE_KEYBOARD_GRID, SECTION_C_KEYBOARD_AXIS, SECTION_C_MOUSE_AXIS
 from core.geometry import Skeleton2D, clamp, distance
 from core.smoothing import EMA
@@ -173,9 +183,9 @@ class LiveSectionCApp:
         self.hand_preference = hand_preference
         self.pose = PoseEstimator(model_path=model_name or POSE_MODEL, device=device or DEVICE)
         self.cap = cv2.VideoCapture(cam_index)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_TARGET_FPS)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_FRAME_HEIGHT)
         self.ema: Optional[EMA] = EMA(alpha=smoothing_alpha) if smoothing_alpha else None
         self.scorer = SectionCScorer()
         self.hand_detector = ObjectDetector(model_path=HAND_MODEL, device=device or DEVICE)
@@ -251,7 +261,7 @@ class LiveSectionCApp:
                     )
                     self.last_result = result
                     overlay_lines = self._format_overlay(result)
-                    if now - self.last_export_ts > 5.0:
+                    if now - self.last_export_ts > DATA_CAPTURE_INTERVAL:
                         self._export(result)
                         self.last_export_ts = now
                 elif self.last_result is not None:

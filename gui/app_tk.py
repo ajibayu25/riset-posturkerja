@@ -233,9 +233,14 @@ class IndicatorPanel(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
         self.rows: List[tk.Widget] = []
+        self._last_rows: List[Tuple[str, str, str]] = []
 
     def set_rows(self, rows: List[Tuple[str, str, str]]) -> None:
         """Replace current rows with colored status badges + labels."""
+        # Avoid unnecessary redraws if nothing changed; keeps UI snappier.
+        if rows == self._last_rows:
+            return
+        self._last_rows = list(rows)
         for row in self.rows:
             row.destroy()
         self.rows.clear()
@@ -700,7 +705,7 @@ class SectionAPipeline(BasePipeline):
         self._draw_skeleton = draw_skeleton
         self._floor_line_y: Optional[float] = None
         # Run heavy desk/chair detection sparingly to keep UI responsive.
-        self._desk_detection_stride = 15
+        self._desk_detection_stride = 40
         self._frame_counter = 0
 
     def process_frame(self, frame: np.ndarray, keypoints: Optional[np.ndarray], timestamp: float, evaluate: bool) -> PipelineResult:
@@ -930,7 +935,7 @@ class SectionBPipeline(BasePipeline):
 
         smoothing_alpha: float = 0.3,
 
-        detection_stride: int = 10,
+        detection_stride: int = 18,
 
     ) -> None:
 
@@ -1152,7 +1157,7 @@ class SectionCPipeline(BasePipeline):
         smoothing_alpha: float = 0.3,
 
         hand_preference: str = "right",
-        detection_stride: int = 12,
+        detection_stride: int = 30,
         draw_skeleton: bool = True,
 
     ) -> None:
@@ -1492,7 +1497,7 @@ class ROSATkApp:
 
             if section == "B":
 
-                pipeline_kwargs["detection_stride"] = 5
+                pipeline_kwargs["detection_stride"] = 18
 
             if section == "C":
 

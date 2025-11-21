@@ -191,7 +191,7 @@ class LiveSectionCApp:
         self.hand_detector = ObjectDetector(model_path=HAND_MODEL, device=device or DEVICE)
         self._hand_bboxes: List[BBox] = []
         self._frame_idx = 0
-        self._hand_stride = 6
+        self._hand_stride = 16
         self.session_start = time.time()
         self.continuous_start = self.session_start
         self.last_export_ts = 0.0

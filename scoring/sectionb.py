@@ -177,7 +177,7 @@ class LiveSectionBApp:
         device: Optional[str] = None,
         export_mode: str = "csv",
         smoothing_alpha: float = 0.3,
-        detection_stride: int = 5,
+        detection_stride: int = 18,
     ) -> None:
         self.cam_index = cam_index
         self.export_mode = export_mode

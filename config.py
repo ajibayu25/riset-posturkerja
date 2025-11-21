@@ -12,10 +12,10 @@ CAMERA_INDEX = {
     "C": 1,  # Overhead view fallback index
 }
 
-# Default camera capture settings (lower than 1080p to keep CPU/GPU usage down)
-CAMERA_TARGET_FPS = 20
-CAMERA_FRAME_WIDTH = 960
-CAMERA_FRAME_HEIGHT = 540
+# Default camera capture settings (kept low to reduce CPU/GPU load)
+CAMERA_TARGET_FPS = 8
+CAMERA_FRAME_WIDTH = 480
+CAMERA_FRAME_HEIGHT = 270
 
 # Unified sampling/export interval for ROSA scores (seconds)
 DATA_CAPTURE_INTERVAL = 10.0

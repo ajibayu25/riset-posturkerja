@@ -1,4 +1,7 @@
 # Global config
+from datetime import datetime
+from pathlib import Path
+
 DEVICE       = "cpu"       # default to CPU; set "cuda" if GPU available
 POSE_MODEL   = "yolov8n-pose.pt"
 DET_MODEL    = "yolov8n.pt"
@@ -47,7 +50,13 @@ SECTIONC_HAND = "right"
 GLARE_SERIAL_PORT = None  # e.g. "COM5" or "/dev/ttyUSB0"
 GLARE_BAUDRATE = 115200
 
-# Ekspor data riset
-EXPORT_CSV   = "rosa_export.csv"
-EXPORT_JSONL = "rosa_export.jsonl"
-EXPORT_XLSX  = "rosa_summary.xlsx"
+# Ekspor data riset (per sesi, di bawah folder "rosa-exports")
+# Pastikan path absolut supaya tidak tergantung working directory.
+BASE_DIR = Path(__file__).resolve().parent
+EXPORT_ROOT = BASE_DIR / "rosa-exports"
+SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+EXPORT_DIR = EXPORT_ROOT / SESSION_ID
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+EXPORT_CSV   = EXPORT_DIR / "rosa_export.csv"
+EXPORT_JSONL = EXPORT_DIR / "rosa_export.jsonl"
+EXPORT_XLSX  = EXPORT_DIR / "rosa_summary.xlsx"

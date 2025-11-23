@@ -59,6 +59,7 @@ from config import (
     EXPORT_XLSX,
     GLARE_SERIAL_PORT,
     GLARE_BAUDRATE,
+    EXPORT_DIR,
     POSE_MODEL,
     SECTIONC_HAND,
 )
@@ -195,7 +196,7 @@ QUERY_DISPLAY = {
 
 }
 
-SNAPSHOT_ROOT = Path("snapshots")
+SNAPSHOT_ROOT = EXPORT_DIR / "snapshots"
 
 
 def save_snapshot(section: str, frame: np.ndarray, timestamp: float) -> None:
